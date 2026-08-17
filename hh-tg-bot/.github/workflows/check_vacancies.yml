@@ -1,0 +1,38 @@
+name: Check hh.uz data analytics vacancies
+
+on:
+  schedule:
+    # Har 30 daqiqada ishga tushadi (UTC vaqti bo'yicha)
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Repo'ni olish
+        uses: actions/checkout@v4
+
+      - name: Python o'rnatish
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Kutubxonalarni o'rnatish
+        run: pip install -r requirements.txt
+
+      - name: Vakansiyalarni tekshirish va Telegramga yuborish
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python check_vacancies.py
+
+      - name: seen_ids.json holatini repo'ga saqlash
+        run: |
+          git config user.name "hh-vacancy-bot"
+          git config user.email "actions@github.com"
+          git add seen_ids.json
+          git diff --staged --quiet || git commit -m "Update seen vacancy ids"
+          git push
