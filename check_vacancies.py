@@ -21,6 +21,8 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -79,6 +81,7 @@ SEARCH_KEYWORDS = [
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
+MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -113,6 +116,28 @@ def strip_html(text):
     return text
 
 
+def matched_keyword(title):
+    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi so'zlardan biri bor-yo'qligini
+    tekshiradi. hh.uz RSS qidiruvi "fuzzy" ishlaydi (tavsifda yoki mos
+    kelmaydigan bo'limda so'z uchrasa ham natija qaytaradi — masalan
+    "Project Manager"), shuning uchun faqat SARLAVHADA aynan mos so'z
+    bo'lgan vakansiyalar qabul qilinadi. Mos kelgan so'zni qaytaradi,
+    aks holda None."""
+    title_lower = title.lower()
+    for keyword in SEARCH_KEYWORDS:
+        if keyword.lower() in title_lower:
+            return keyword
+    return None
+
+
+def parse_pub_date(item):
+    raw = item.findtext("pubDate", default="")
+    try:
+        return parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_vacancies_for_keyword(keyword):
     params = {
         "text": keyword,
@@ -128,18 +153,29 @@ def fetch_vacancies_for_keyword(keyword):
         link = item.findtext("link", default="").strip()
         title = item.findtext("title", default="Noma'lum lavozim").strip()
         description = strip_html(item.findtext("description", default=""))
+        pub_date = parse_pub_date(item)
+
+        # Faqat sarlavhasi bizning 34 ta kalit so'zdan biriga aynan mos
+        # keladigan vakansiyalarni qabul qilamiz (hh.uz'ning aloqasiz
+        # natijalar chiqarishining oldini olish uchun, masalan "Project
+        # Manager").
+        if not matched_keyword(title):
+            continue
+
         items.append({
             "id": link,  # link vakansiya uchun noyob identifikator sifatida ishlatiladi
             "title": title,
             "description": description,
             "link": link,
+            "pub_date": pub_date,
         })
     return items
 
 
 def fetch_vacancies():
-    """Har bir kalit so'z uchun alohida so'rov yuboradi va natijalarni
-    (link bo'yicha) takrorlanmasdan birlashtiradi."""
+    """Har bir kalit so'z uchun alohida so'rov yuboradi, natijalarni
+    (link bo'yicha) takrorlanmasdan birlashtiradi, eng yangilaridan
+    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi."""
     seen_links = set()
     all_items = []
     for keyword in SEARCH_KEYWORDS:
@@ -148,7 +184,11 @@ def fetch_vacancies():
                 seen_links.add(item["id"])
                 all_items.append(item)
         time.sleep(1)  # hh.uz serveriga hurmat: so'rovlar orasida kichik pauza
-    return all_items
+
+    # pub_date bo'yicha eng yangisidan eskisiga saralaymiz (sana topilmasa eng oxiriga tushadi)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    all_items.sort(key=lambda v: v["pub_date"] or epoch, reverse=True)
+    return all_items[:MAX_RESULTS_PER_RUN]
 
 
 def format_message(vacancy):
