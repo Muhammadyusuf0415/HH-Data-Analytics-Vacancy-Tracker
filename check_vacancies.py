@@ -2,35 +2,44 @@
 hh.uz (Toshkent) saytidan "data analytics"ga oid yangi vakansiyalarni
 topib, Telegram botga yuboradi.
 
+MUHIM: hh.ru/hh.uz 2026-yil aprelidan boshlab api.hh.ru JSON API'sini
+autentifikatsiyasiz so'rovlar uchun yopib qo'ygan (403/400 xato beradi).
+Shu sababli bu skript hali ham ochiq bo'lgan qidiruv RSS-lentasidan
+foydalanadi: https://tashkent.hh.uz/search/vacancy/rss
+
 Ishlash printsipi:
-- Har safar ishga tushganda hh.ru API orqali Toshkent (area=2759) bo'yicha
-  data analytics kalit so'zlariga mos vakansiyalarni so'raydi.
-- seen_ids.json faylida avval yuborilgan vakansiyalar ID'sini saqlaydi,
+- Har safar ishga tushganda RSS-lentadan Toshkentdagi data analytics
+  vakansiyalarini oladi.
+- seen_ids.json faylida avval yuborilgan vakansiyalar linkini saqlaydi,
   shu bois har vakansiya faqat BIR MARTA yuboriladi.
 - GitHub Actions orqali muntazam (masalan har 30 daqiqada) ishga tushiriladi.
 """
 
+import html
 import json
 import os
+import re
 import time
+import xml.etree.ElementTree as ET
+
 import requests
 
 # ---------- SOZLAMALAR ----------
 HH_AREA_ID = 2759  # Toshkent
-# Qidiruv so'zlari (xohlasangiz qo'shishingiz/o'zgartirishingiz mumkin)
-SEARCH_QUERY = "data analyst OR data analytics OR аналитик данных OR дата-аналитик OR data analyst"
+SEARCH_QUERY = "data analyst OR data analytics OR аналитик данных OR дата-аналитик"
+RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-HH_API_URL = "https://api.hh.ru/vacancies"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-# hh.ru API User-Agent header'i bo'lmagan so'rovlarni 403 bilan rad etadi
-HH_HEADERS = {
-    "User-Agent": "hh-vacancy-telegram-bot/1.0 (contact: example@example.com)"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 }
 
 
@@ -42,51 +51,48 @@ def load_seen_ids():
 
 
 def save_seen_ids(seen_ids):
-    # eng oxirgi MAX_STORED_IDS tasini saqlaymiz
     ids_list = list(seen_ids)[-MAX_STORED_IDS:]
     with open(SEEN_IDS_FILE, "w", encoding="utf-8") as f:
         json.dump(ids_list, f)
 
 
+def strip_html(text):
+    """<p>...</p> kabi HTML teglarini olib tashlaydi va bo'sh joylarni tozalaydi."""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def fetch_vacancies():
     params = {
         "text": SEARCH_QUERY,
-        "search_field": "name",  # faqat vakansiya nomida qidiradi (aniqroq natija)
         "area": HH_AREA_ID,
         "order_by": "publication_time",
-        "per_page": 50,
     }
-    resp = requests.get(HH_API_URL, params=params, headers=HH_HEADERS, timeout=30)
+    resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
     resp.raise_for_status()
-    return resp.json().get("items", [])
+
+    root = ET.fromstring(resp.content)
+    items = []
+    for item in root.findall("./channel/item"):
+        link = item.findtext("link", default="").strip()
+        title = item.findtext("title", default="Noma'lum lavozim").strip()
+        description = strip_html(item.findtext("description", default=""))
+        items.append({
+            "id": link,  # link vakansiya uchun noyob identifikator sifatida ishlatiladi
+            "title": title,
+            "description": description,
+            "link": link,
+        })
+    return items
 
 
 def format_message(vacancy):
-    name = vacancy.get("name", "Noma'lum lavozim")
-    employer = vacancy.get("employer", {}).get("name", "Noma'lum kompaniya")
-    url = vacancy.get("alternate_url", "")
-
-    salary = vacancy.get("salary")
-    if salary:
-        s_from = salary.get("from")
-        s_to = salary.get("to")
-        currency = salary.get("currency", "")
-        if s_from and s_to:
-            salary_text = f"{s_from:,} - {s_to:,} {currency}"
-        elif s_from:
-            salary_text = f"{s_from:,}+ {currency}"
-        elif s_to:
-            salary_text = f"{s_to:,} gacha {currency}"
-        else:
-            salary_text = "Ko'rsatilmagan"
-    else:
-        salary_text = "Ko'rsatilmagan"
-
     return (
-        f"📊 <b>{name}</b>\n"
-        f"🏢 {employer}\n"
-        f"💰 {salary_text}\n"
-        f"🔗 {url}"
+        f"📊 <b>{vacancy['title']}</b>\n"
+        f"{vacancy['description']}\n"
+        f"🔗 {vacancy['link']}"
     )
 
 
@@ -116,7 +122,7 @@ def main():
     new_count = 0
     for vacancy in vacancies:
         vac_id = vacancy["id"]
-        if vac_id in seen_ids:
+        if not vac_id or vac_id in seen_ids:
             continue
 
         message = format_message(vacancy)
