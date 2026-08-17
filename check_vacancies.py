@@ -28,6 +28,11 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 HH_API_URL = "https://api.hh.ru/vacancies"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
+# hh.ru API User-Agent header'i bo'lmagan so'rovlarni 403 bilan rad etadi
+HH_HEADERS = {
+    "User-Agent": "hh-vacancy-telegram-bot/1.0 (contact: example@example.com)"
+}
+
 
 def load_seen_ids():
     if os.path.exists(SEEN_IDS_FILE):
@@ -51,7 +56,7 @@ def fetch_vacancies():
         "order_by": "publication_time",
         "per_page": 50,
     }
-    resp = requests.get(HH_API_URL, params=params, timeout=30)
+    resp = requests.get(HH_API_URL, params=params, headers=HH_HEADERS, timeout=30)
     resp.raise_for_status()
     return resp.json().get("items", [])
 
