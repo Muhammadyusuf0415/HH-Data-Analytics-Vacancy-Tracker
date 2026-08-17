@@ -29,45 +29,52 @@ HH_AREA_ID = 2759  # Toshkent
 # hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
 # qaytarib yuboradi), shuning uchun har bir so'z alohida so'rov sifatida
 # yuboriladi va natijalar keyin birlashtiriladi.
-# Bu yerda "analitik" yoki "analiz" so'zining turli shakl va tillardagi
-# variantlari qamrab olingan — vakansiya nomida shulardan BIRI bo'lsa yetarli.
-# ---------- SOZLAMALAR ----------
-HH_AREA_ID = 2759  # Toshkent
-# hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
-# qaytarib yuboradi), shuning uchun har bir so'z alohida so'rov sifatida
-# yuboriladi va natijalar keyin birlashtiriladi.
 # Bu ro'yxat ataylab keng ildiz so'zlardan ("анализ", "tahlil" kabi) qochadi,
 # chunki ular deyarli har qanday vakansiyada uchraydi (masalan "bozorni
 # tahlil qilish", "moliyaviy anализ") va noaniq natija beradi. Buning o'rniga
-# aynan "data analytics" kasbiga tegishli aniq iboralar ishlatiladi.
+# aynan data analytics kasbiga (va unga yaqin rollarga) tegishli aniq
+# iboralar ishlatiladi.
 SEARCH_KEYWORDS = [
     # --- Data Analyst / Analytics ---
     "data analyst",
     "data analytics",
     "аналитик данных",
+    "аналитик по данным",
     "дата-аналитик",
     "дата аналитик",
     "data analytic",
     # --- Data Scientist / Engineer ---
     "data scientist",
     "data engineer",
+    "дата-инженер",
+    "инженер данных",
     "data engineering",
     "big data",
+    "machine learning engineer",
+    "ML engineer",
     # --- BI (Business Intelligence) ---
     "BI аналитик",
     "BI-аналитик",
     "business intelligence",
+    "BI developer",
     "Power BI",
     "Tableau",
+    "analytics engineer",
     # --- Yaqin/qo'shni rollar ---
     "product analyst",
     "продуктовый аналитик",
     "бизнес-аналитик",
     "business analyst",
     "quantitative analyst",
+    "marketing analyst",
+    "маркетинговый аналитик",
+    "financial analyst",
+    "финансовый аналитик",
+    "web analytics",
+    "веб-аналитик",
+    # --- O'zbekcha ---
+    "ma'lumotlar tahlilchisi",
 ]
-
-
 
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
