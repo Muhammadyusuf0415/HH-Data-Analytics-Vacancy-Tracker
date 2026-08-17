@@ -78,6 +78,27 @@ SEARCH_KEYWORDS = [
     "ma'lumotlar tahlilchisi",
 ]
 
+# Sarlavhada bu "ildiz" so'zlardan (butun so'z sifatida, boshqa harflar
+# bilan qo'shilib ketmagan holda) biri uchrasa ham vakansiya qabul
+# qilinadi: analitik/analyst/BI/data va ularning turli shakllari.
+# \b (so'z chegarasi) tufayli "bilan", "database" kabi so'zlar ichidagi
+# tasodifiy moslik hisobga olinmaydi.
+# Bular prefiks sifatida qidiriladi (masalan "analitik" so'zi
+# "analitikning", "analitikaga" kabi qo'shimchali shakllarni ham qamrab oladi)
+ROOT_PREFIXES = [
+    "analitik", "analitika",
+    "analyst", "analytic", "analytics",
+    "аналитик", "аналитика", "аналист",
+    "data", "дата",
+]
+# "bi" juda qisqa bo'lgani uchun faqat ALOHIDA SO'Z sifatida (masalan
+# "BI aналитик", "Senior BI") qidiriladi — "biznes", "bilan" kabi
+# so'zlar ichidagi tasodifiy moslikni chiqarib tashlash uchun.
+ROOT_EXACT_WORDS = ["bi"]
+
+ROOT_PATTERNS = [re.compile(rf"\b{re.escape(w)}\w*", re.IGNORECASE) for w in ROOT_PREFIXES]
+ROOT_PATTERNS += [re.compile(rf"\b{re.escape(w)}\b", re.IGNORECASE) for w in ROOT_EXACT_WORDS]
+
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
@@ -117,16 +138,28 @@ def strip_html(text):
 
 
 def matched_keyword(title):
-    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi so'zlardan biri bor-yo'qligini
-    tekshiradi. hh.uz RSS qidiruvi "fuzzy" ishlaydi (tavsifda yoki mos
-    kelmaydigan bo'limda so'z uchrasa ham natija qaytaradi — masalan
-    "Project Manager"), shuning uchun faqat SARLAVHADA aynan mos so'z
-    bo'lgan vakansiyalar qabul qilinadi. Mos kelgan so'zni qaytaradi,
-    aks holda None."""
+    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi to'liq iboralardan yoki
+    ROOT_PREFIXES/ROOT_EXACT_WORDS ro'yxatidagi ildiz so'zlardan biri
+    bor-yo'qligini tekshiradi. hh.uz RSS qidiruvi "fuzzy" ishlaydi
+    (tavsifda yoki mos kelmaydigan bo'limda so'z uchrasa ham natija
+    qaytaradi — masalan "Project Manager"), shuning uchun faqat
+    SARLAVHADA aynan mos so'z bo'lgan vakansiyalar qabul qilinadi.
+    Mos kelgan so'zni qaytaradi, aks holda None."""
     title_lower = title.lower()
+
+    # 1) Avval to'liq/aniq iboralar tekshiriladi (masalan "Power BI", "Tableau")
     for keyword in SEARCH_KEYWORDS:
         if keyword.lower() in title_lower:
             return keyword
+
+    # 2) Keyin ildiz so'zlar tekshiriladi: "analitik", "analyst", "data",
+    # "BI" va shu kabi barcha shakllar (masalan "Senior Data Analyst",
+    # "Junior Analitik", "BI Developer")
+    for pattern in ROOT_PATTERNS:
+        match = pattern.search(title_lower)
+        if match:
+            return match.group(0)
+
     return None
 
 
