@@ -26,7 +26,43 @@ import requests
 
 # ---------- SOZLAMALAR ----------
 HH_AREA_ID = 2759  # Toshkent
-SEARCH_QUERY = "data analyst OR data analytics OR аналитик данных OR дата-аналитик"
+# hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
+# qaytarib yuboradi), shuning uchun har bir so'z alohida so'rov sifatida
+# yuboriladi va natijalar keyin birlashtiriladi.
+# Bu yerda "analitik" yoki "analiz" so'zining turli shakl va tillardagi
+# variantlari qamrab olingan — vakansiya nomida shulardan BIRI bo'lsa yetarli.
+SEARCH_KEYWORDS = [
+    # --- Ruscha ---
+    "аналитик",
+    "аналитики",
+    "аналитика",
+    "аналитический",
+    "аналитическая",
+    "аналитические",
+    "анализ",
+    "анализа",
+    "анализе",
+    "анализировать",
+    "анализу",
+    # --- Inglizcha ---
+    "analyst",
+    "analysts",
+    "analytics",
+    "analysis",
+    "analytical",
+    "analyze",
+    "analyse",
+    # --- O'zbekcha (lotin) ---
+    "analitik",
+    "analitika",
+    "analitikasi",
+    "tahlilchi",
+    "tahlilchisi",
+    "tahlil",
+    "tahliliy",
+    "tahlilchilik",
+]
+
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
@@ -64,9 +100,9 @@ def strip_html(text):
     return text
 
 
-def fetch_vacancies():
+def fetch_vacancies_for_keyword(keyword):
     params = {
-        "text": SEARCH_QUERY,
+        "text": keyword,
         "area": HH_AREA_ID,
         "order_by": "publication_time",
     }
@@ -86,6 +122,20 @@ def fetch_vacancies():
             "link": link,
         })
     return items
+
+
+def fetch_vacancies():
+    """Har bir kalit so'z uchun alohida so'rov yuboradi va natijalarni
+    (link bo'yicha) takrorlanmasdan birlashtiradi."""
+    seen_links = set()
+    all_items = []
+    for keyword in SEARCH_KEYWORDS:
+        for item in fetch_vacancies_for_keyword(keyword):
+            if item["id"] and item["id"] not in seen_links:
+                seen_links.add(item["id"])
+                all_items.append(item)
+        time.sleep(1)  # hh.uz serveriga hurmat: so'rovlar orasida kichik pauza
+    return all_items
 
 
 def format_message(vacancy):
