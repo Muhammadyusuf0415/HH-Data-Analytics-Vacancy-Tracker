@@ -1,45 +1,45 @@
-# hh.uz Data Analytics vakansiya boti
+# HH.uz Data Analytics Vacancy Tracker
 
-Bu skript har 30 daqiqada tashkent.hh.uz (hh.ru API orqali) dagi "data analyst /
-data analytics" bo'yicha yangi vakansiyalarni tekshiradi va Telegram botga yuboradi.
+Python-based monitoring service that continuously scans job postings on
+**tashkent.hh.uz** for roles related to data analytics — Data Analyst,
+Data Scientist, Data Engineer, BI Developer, Business Analyst, and
+related positions — and delivers matching vacancies to a Telegram channel
+in real time.
 
-## 1-qadam: Telegram bot yaratish
+## Overview
 
-1. Telegramda **@BotFather** ga yozing.
-2. `/newbot` buyrug'ini yuboring, botga ism va username bering.
-3. BotFather sizga **token** beradi (masalan `123456:ABC-DEF...`). Buni saqlab qo'ying.
-4. Yangi botingizga o'zingiz `/start` deb yozing (bot sizga xabar yubora olishi uchun
-   avval siz u bilan suhbatni boshlashingiz kerak).
+The project searches across dozens of keyword variations in both Russian
+and English, applies title-based root-word matching (e.g. `analitik`,
+`analyst`, `data`, `BI`) to catch postings that simple keyword search
+would miss, and filters out irrelevant results common to fuzzy search
+engines (e.g. "Project Manager" appearing in an "analyst" search).
 
-## 2-qadam: chat_id ni topish
+## Features
 
-1. Brauzerda quyidagi manzilga o'ting (TOKEN o'rniga o'z tokeningizni qo'ying):
-   `https://api.telegram.org/botTOKEN/getUpdates`
-2. Natijada `"chat":{"id": 123456789, ...}` ko'rinishida raqam chiqadi — shu sizning
-   `chat_id`ingiz.
+- **Broad keyword coverage** — matches full phrases (`data analyst`,
+  `бизнес-аналитик`, `Power BI`) as well as root-word variations
+  (`analitik`, `аналитик`, `data`, `BI`) using word-boundary regex,
+  avoiding false positives from unrelated words.
+- **Parallel fetching** — queries multiple search terms concurrently
+  instead of sequentially, with automatic retry and backoff on rate
+  limiting (HTTP 429).
+- **Deduplication** — tracks previously seen postings so each vacancy is
+  only delivered once.
+- **Recency filtering** — only surfaces postings within a configurable
+  recent time window, falling back to the posting date embedded in the
+  listing description when the feed's own timestamp is unreliable.
+- **Resilient delivery** — a failure on one keyword or one message does
+  not interrupt the rest of the run; progress is saved incrementally.
+- **Automated scheduling** — runs on a recurring schedule via CI, with
+  no server or always-on process required.
 
-## 3-qadam: GitHub repo tayyorlash
+## Tech Stack
 
-1. GitHub'da yangi **private** repo yarating (masalan `hh-vacancy-bot`).
-2. Ushbu papkadagi barcha fayllarni (shu jumladan `.github` papkasini) repo'ga
-   yuklang (push qiling).
+- Python 3.11
+- `requests` for HTTP
+- `xml.etree.ElementTree` for feed parsing
+- GitHub Actions for scheduling and execution
 
-## 4-qadam: Maxfiy kalitlarni (secrets) qo'shish
+## License
 
-Repo sahifasida: **Settings → Secrets and variables → Actions → New repository secret**
-
-- `TELEGRAM_BOT_TOKEN` — BotFather bergan token
-- `TELEGRAM_CHAT_ID` — 2-qadamda topgan chat_id
-
-## 5-qadam: Ishga tushirish
-
-- Workflow avtomatik ravishda har 30 daqiqada ishlaydi.
-- Qo'lda sinab ko'rish uchun: repo'da **Actions** bo'limiga o'ting → 
-  "Check hh.uz data analytics vacancies" → **Run workflow**.
-
-## Sozlamalarni o'zgartirish
-
-- `check_vacancies.py` faylidagi `SEARCH_QUERY` o'zgaruvchisi orqali qidiruv
-  so'zlarini o'zgartirishingiz mumkin.
-- Tekshirish chastotasini o'zgartirish uchun `.github/workflows/check_vacancies.yml`
-  faylidagi `cron` qatorini tahrirlang (masalan `*/15 * * * *` = har 15 daqiqada).
+This project is provided as-is for personal use.
