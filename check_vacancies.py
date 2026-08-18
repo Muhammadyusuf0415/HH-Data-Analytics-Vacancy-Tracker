@@ -21,6 +21,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -104,6 +105,10 @@ SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
 
+MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni
+MAX_RETRIES = 3  # 429 (Too Many Requests) xatosida qayta urinishlar soni
+RETRY_BACKOFF_SECONDS = 3  # har qayta urinishda kutish (progressiv ravishda oshadi)
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -172,15 +177,46 @@ def parse_pub_date(item):
 
 
 def fetch_vacancies_for_keyword(keyword):
+    """Bitta kalit so'z uchun RSS'dan vakansiyalarni oladi.
+    429 (Too Many Requests) xatosida MAX_RETRIES marta progressiv
+    kutish bilan qayta urinadi. Boshqa xatolarda (tarmoq, parsing va h.k.)
+    butun skriptni to'xtatmaslik uchun bo'sh ro'yxat qaytaradi va
+    xatoni konsolga chiqaradi."""
     params = {
         "text": keyword,
         "area": HH_AREA_ID,
         "order_by": "publication_time",
     }
-    resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
 
-    root = ET.fromstring(resp.content)
+    resp = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
+            if resp.status_code == 429:
+                wait = RETRY_BACKOFF_SECONDS * attempt
+                print(f"[{keyword}] 429 (Too Many Requests) — {wait} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        except requests.RequestException as e:
+            print(f"[{keyword}] So'rov xatosi: {e}")
+            resp = None
+            break
+    else:
+        # for-else: barcha urinishlar 429 bilan tugadi
+        print(f"[{keyword}] {MAX_RETRIES} urinishdan keyin ham 429 xatosi — bu kalit so'z o'tkazib yuborildi")
+        return []
+
+    if resp is None:
+        return []
+
+    try:
+        root = ET.fromstring(resp.content)
+    except ET.ParseError as e:
+        print(f"[{keyword}] RSS parsing xatosi: {e}")
+        return []
+
     items = []
     for item in root.findall("./channel/item"):
         link = item.findtext("link", default="").strip()
@@ -188,7 +224,7 @@ def fetch_vacancies_for_keyword(keyword):
         description = strip_html(item.findtext("description", default=""))
         pub_date = parse_pub_date(item)
 
-        # Faqat sarlavhasi bizning 34 ta kalit so'zdan biriga aynan mos
+        # Faqat sarlavhasi bizning kalit so'z/ildizlarimizdan biriga mos
         # keladigan vakansiyalarni qabul qilamiz (hh.uz'ning aloqasiz
         # natijalar chiqarishining oldini olish uchun, masalan "Project
         # Manager").
@@ -206,17 +242,35 @@ def fetch_vacancies_for_keyword(keyword):
 
 
 def fetch_vacancies():
-    """Har bir kalit so'z uchun alohida so'rov yuboradi, natijalarni
-    (link bo'yicha) takrorlanmasdan birlashtiradi, eng yangilaridan
-    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi."""
+    """Har bir kalit so'z uchun so'rovlarni PARALLEL (MAX_WORKERS ta bir
+    vaqtda) yuboradi, natijalarni (link bo'yicha) takrorlanmasdan
+    birlashtiradi, eng yangilaridan boshlab saralaydi va faqat oxirgi
+    MAX_RESULTS_PER_RUN tasini qaytaradi.
+    Bitta kalit so'z bo'yicha so'rov muvaffaqiyatsiz tugasa ham
+    (fetch_vacancies_for_keyword ichida ushlanadi), qolgan kalit so'zlar
+    natijalari yo'qolmaydi."""
     seen_links = set()
     all_items = []
-    for keyword in SEARCH_KEYWORDS:
-        for item in fetch_vacancies_for_keyword(keyword):
-            if item["id"] and item["id"] not in seen_links:
-                seen_links.add(item["id"])
-                all_items.append(item)
-        time.sleep(1)  # hh.uz serveriga hurmat: so'rovlar orasida kichik pauza
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_keyword = {
+            executor.submit(fetch_vacancies_for_keyword, keyword): keyword
+            for keyword in SEARCH_KEYWORDS
+        }
+        for future in as_completed(future_to_keyword):
+            keyword = future_to_keyword[future]
+            try:
+                items = future.result()
+            except Exception as e:
+                # Kutilmagan xato — shu kalit so'zni o'tkazib yuboramiz,
+                # boshqalarga ta'sir qilmaydi.
+                print(f"[{keyword}] Kutilmagan xato: {e}")
+                items = []
+
+            for item in items:
+                if item["id"] and item["id"] not in seen_links:
+                    seen_links.add(item["id"])
+                    all_items.append(item)
 
     # pub_date bo'yicha eng yangisidan eskisiga saralaymiz (sana topilmasa eng oxiriga tushadi)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -233,16 +287,25 @@ def format_message(vacancy):
 
 
 def send_to_telegram(text):
+    """True/False qaytaradi — muvaffaqiyatli yuborildimi yoki yo'q.
+    Tarmoq/Telegram xatosida butun skriptni to'xtatmaydi, faqat shu
+    vakansiyani "yuborilmadi" deb belgilaydi (seen_ids'ga qo'shilmaydi,
+    keyingi ishga tushishda qayta urinilishi mumkin)."""
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
-    resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=30)
-    if not resp.ok:
-        print(f"Telegramga yuborishda xatolik: {resp.status_code} {resp.text}")
-    resp.raise_for_status()
+    try:
+        resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=30)
+        if not resp.ok:
+            print(f"Telegramga yuborishda xatolik: {resp.status_code} {resp.text}")
+            return False
+        return True
+    except requests.RequestException as e:
+        print(f"Telegramga yuborishda tarmoq xatosi: {e}")
+        return False
 
 
 def main():
@@ -256,18 +319,27 @@ def main():
     vacancies = fetch_vacancies()
 
     new_count = 0
-    for vacancy in vacancies:
-        vac_id = vacancy["id"]
-        if not vac_id or vac_id in seen_ids:
-            continue
+    try:
+        for vacancy in vacancies:
+            vac_id = vacancy["id"]
+            if not vac_id or vac_id in seen_ids:
+                continue
 
-        message = format_message(vacancy)
-        send_to_telegram(message)
-        seen_ids.add(vac_id)
-        new_count += 1
-        time.sleep(1)  # Telegram rate limit uchun kichik pauza
+            message = format_message(vacancy)
+            sent_ok = send_to_telegram(message)
+            if sent_ok:
+                seen_ids.add(vac_id)
+                new_count += 1
+                # Har muvaffaqiyatli yuborishdan keyin DARHOL saqlaymiz —
+                # shunda agar keyingi vakansiyani yuborishda xato bo'lsa
+                # yoki skript to'xtab qolsa, hozirgacha yuborilganlar
+                # qayta yuborilib qolmaydi.
+                save_seen_ids(seen_ids)
+            time.sleep(1)  # Telegram rate limit uchun kichik pauza
+    finally:
+        # Har ehtimolga qarshi yakunida yana bir bor saqlaymiz.
+        save_seen_ids(seen_ids)
 
-    save_seen_ids(seen_ids)
     print(f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}")
 
 
