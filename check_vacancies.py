@@ -283,7 +283,18 @@ def fetch_vacancies():
     # bo'lmasligi mumkin (masalan kalit so'z ro'yxati yangi kengaytirilgan
     # bo'lsa), lekin ular haqiqatda "yangi vakansiya" emas.
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    no_date_count = sum(1 for v in all_items if not v["pub_date"])
     fresh_items = [v for v in all_items if v["pub_date"] and v["pub_date"] >= cutoff]
+
+    print(
+        f"[debug] Kalit so'zlarga mos jami: {len(all_items)} | "
+        f"sana topilmagan (chiqarib tashlandi): {no_date_count} | "
+        f"oxirgi {MAX_AGE_DAYS} kun ichida: {len(fresh_items)}"
+    )
+    if all_items[:5]:
+        print("[debug] Eng so'nggi 5 ta topilgan (filtrgacha):")
+        for v in all_items[:5]:
+            print(f"  - {v['pub_date']}: {v['title']}")
 
     return fresh_items[:MAX_RESULTS_PER_RUN]
 
