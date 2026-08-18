@@ -22,7 +22,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 import requests
@@ -104,6 +104,9 @@ RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
+MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
+                   # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
+                   # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
 MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni
 MAX_RETRIES = 3  # 429 (Too Many Requests) xatosida qayta urinishlar soni
@@ -275,7 +278,14 @@ def fetch_vacancies():
     # pub_date bo'yicha eng yangisidan eskisiga saralaymiz (sana topilmasa eng oxiriga tushadi)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
     all_items.sort(key=lambda v: v["pub_date"] or epoch, reverse=True)
-    return all_items[:MAX_RESULTS_PER_RUN]
+
+    # MAX_AGE_DAYS'dan eski e'lonlarni chiqarib tashlaymiz — bular seen_ids'da
+    # bo'lmasligi mumkin (masalan kalit so'z ro'yxati yangi kengaytirilgan
+    # bo'lsa), lekin ular haqiqatda "yangi vakansiya" emas.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    fresh_items = [v for v in all_items if v["pub_date"] and v["pub_date"] >= cutoff]
+
+    return fresh_items[:MAX_RESULTS_PER_RUN]
 
 
 def format_message(vacancy):
