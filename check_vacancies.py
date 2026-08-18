@@ -172,11 +172,47 @@ def matched_keyword(title):
 
 
 def parse_pub_date(item):
-    raw = item.findtext("pubDate", default="")
-    try:
-        return parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
-        return None
+    """RSS'dagi pubDate maydonini parse qiladi. hh.uz odatda RFC-2822
+    formatini ishlatadi ("Mon, 17 Aug 2026 10:00:00 +0500"), lekin ehtiyot
+    chorasi sifatida ISO-8601 formatini ham ("2026-08-17T10:00:00+05:00")
+    sinab ko'ramiz.
+
+    Agar pubDate bo'sh yoki parse qilib bo'lmasa (amalda hh.uz buni ko'pincha
+    bo'sh qoldirar ekan), TAVSIF matnidagi "Создана: DD.MM.YYYY" formatidagi
+    sanani zaxira manba sifatida ishlatamiz — bu aniq soatni bermaydi, lekin
+    kun aniqligida ishonchli."""
+    raw = item.findtext("pubDate", default="").strip()
+
+    if raw:
+        try:
+            return parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            pass
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            pass
+
+    # Zaxira: tavsifdagi "Создана: DD.MM.YYYY" sanasi (Toshkent vaqti, UTC+5)
+    description_raw = item.findtext("description", default="")
+    match = re.search(r"Создана:\s*(\d{2})\.(\d{2})\.(\d{4})", description_raw)
+    if match:
+        day, month, year = match.groups()
+        try:
+            tashkent_tz = timezone(timedelta(hours=5))
+            dt = datetime(int(year), int(month), int(day), tzinfo=tashkent_tz)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            pass
+
+    if raw:
+        print(f"[debug] pubDate parse qilinmadi, xom qiymat: {raw!r}")
+    else:
+        print("[debug] pubDate bo'sh va tavsifda ham 'Создана:' sanasi topilmadi")
+    return None
 
 
 def fetch_vacancies_for_keyword(keyword):
