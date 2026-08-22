@@ -32,73 +32,24 @@ HH_AREA_ID = 2759  # Toshkent
 # hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
 # qaytarib yuboradi), shuning uchun har bir so'z alohida so'rov sifatida
 # yuboriladi va natijalar keyin birlashtiriladi.
-# Bu ro'yxat ataylab keng ildiz so'zlardan ("анализ", "tahlil" kabi) qochadi,
-# chunki ular deyarli har qanday vakansiyada uchraydi (masalan "bozorni
-# tahlil qilish", "moliyaviy anализ") va noaniq natija beradi. Buning o'rniga
-# aynan data analytics kasbiga (va unga yaqin rollarga) tegishli aniq
-# iboralar ishlatiladi.
+# Ro'yxat ataylab qisqa va keng ildiz so'zlardan iborat (aniq iboralar
+# o'rniga), shunda: 1) hh.uz'ga yuboriladigan so'rovlar soni kamayadi
+# (tezroq ishlaydi, timeout bo'lganda ham umumiy kutish vaqti qisqaradi),
+# 2) shu ildizlarning barcha shakllari (analitikning, analyticsdagi va h.k.)
+# bitta so'rov bilan qamrab olinadi.
 SEARCH_KEYWORDS = [
-    # --- Data Analyst / Analytics ---
-    "data analyst",
-    "data analytics",
-    "аналитик данных",
-    "аналитик по данным",
-    "дата-аналитик",
-    "дата аналитик",
-    "data analytic",
-    # --- Data Scientist / Engineer ---
-    "data scientist",
-    "data engineer",
-    "дата-инженер",
-    "инженер данных",
-    "data engineering",
-    "big data",
-    "machine learning engineer",
-    "ML engineer",
-    # --- BI (Business Intelligence) ---
-    "BI аналитик",
-    "BI-аналитик",
-    "business intelligence",
-    "BI developer",
-    "Power BI",
-    "Tableau",
-    "analytics engineer",
-    # --- Yaqin/qo'shni rollar ---
-    "product analyst",
-    "продуктовый аналитик",
-    "бизнес-аналитик",
-    "business analyst",
-    "quantitative analyst",
-    "marketing analyst",
-    "маркетинговый аналитик",
-    "financial analyst",
-    "финансовый аналитик",
-    "web analytics",
-    "веб-аналитик",
-    # --- O'zbekcha ---
-    "ma'lumotlar tahlilchisi",
-]
-
-# Sarlavhada bu "ildiz" so'zlardan (butun so'z sifatida, boshqa harflar
-# bilan qo'shilib ketmagan holda) biri uchrasa ham vakansiya qabul
-# qilinadi: analitik/analyst/BI/data va ularning turli shakllari.
-# \b (so'z chegarasi) tufayli "bilan", "database" kabi so'zlar ichidagi
-# tasodifiy moslik hisobga olinmaydi.
-# Bular prefiks sifatida qidiriladi (masalan "analitik" so'zi
-# "analitikning", "analitikaga" kabi qo'shimchali shakllarni ham qamrab oladi)
-ROOT_PREFIXES = [
-    "analitik", "analitika",
+    "analitik", "analitika", "стажер", "amaliyot", "intern", "internship", "excel",
     "analyst", "analytic", "analytics",
     "аналитик", "аналитика", "аналист",
     "data", "дата",
 ]
-# "bi" juda qisqa bo'lgani uchun faqat ALOHIDA SO'Z sifatida (masalan
-# "BI aналитик", "Senior BI") qidiriladi — "biznes", "bilan" kabi
-# so'zlar ichidagi tasodifiy moslikni chiqarib tashlash uchun.
-ROOT_EXACT_WORDS = ["bi"]
 
-ROOT_PATTERNS = [re.compile(rf"\b{re.escape(w)}\w*", re.IGNORECASE) for w in ROOT_PREFIXES]
-ROOT_PATTERNS += [re.compile(rf"\b{re.escape(w)}\b", re.IGNORECASE) for w in ROOT_EXACT_WORDS]
+# Sarlavhada shu so'zlardan (prefiks sifatida, so'z chegarasi bilan) biri
+# uchrasa ham vakansiya qabul qilinadi (masalan "analitik" so'zi
+# "analitikning", "analitikaga" kabi qo'shimchali shakllarni ham qamrab
+# oladi). \b (so'z chegarasi) tufayli "bilan", "database" kabi so'zlar
+# ichidagi tasodifiy moslik hisobga olinmaydi.
+ROOT_PATTERNS = [re.compile(rf"\b{re.escape(w)}\w*", re.IGNORECASE) for w in SEARCH_KEYWORDS]
 
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
@@ -146,23 +97,14 @@ def strip_html(text):
 
 
 def matched_keyword(title):
-    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi to'liq iboralardan yoki
-    ROOT_PREFIXES/ROOT_EXACT_WORDS ro'yxatidagi ildiz so'zlardan biri
-    bor-yo'qligini tekshiradi. hh.uz RSS qidiruvi "fuzzy" ishlaydi
-    (tavsifda yoki mos kelmaydigan bo'limda so'z uchrasa ham natija
-    qaytaradi — masalan "Project Manager"), shuning uchun faqat
-    SARLAVHADA aynan mos so'z bo'lgan vakansiyalar qabul qilinadi.
-    Mos kelgan so'zni qaytaradi, aks holda None."""
+    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi ildiz so'zlardan (va ularning
+    qo'shimchali shakllaridan) biri bor-yo'qligini tekshiradi. hh.uz RSS
+    qidiruvi "fuzzy" ishlaydi (tavsifda yoki mos kelmaydigan bo'limda so'z
+    uchrasa ham natija qaytaradi), shuning uchun faqat SARLAVHADA aynan mos
+    so'z bo'lgan vakansiyalar qabul qilinadi. Mos kelgan so'zni qaytaradi,
+    aks holda None."""
     title_lower = title.lower()
 
-    # 1) Avval to'liq/aniq iboralar tekshiriladi (masalan "Power BI", "Tableau")
-    for keyword in SEARCH_KEYWORDS:
-        if keyword.lower() in title_lower:
-            return keyword
-
-    # 2) Keyin ildiz so'zlar tekshiriladi: "analitik", "analyst", "data",
-    # "BI" va shu kabi barcha shakllar (masalan "Senior Data Analyst",
-    # "Junior Analitik", "BI Developer")
     for pattern in ROOT_PATTERNS:
         match = pattern.search(title_lower)
         if match:
