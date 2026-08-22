@@ -38,10 +38,9 @@ HH_AREA_ID = 2759  # Toshkent
 # 2) shu ildizlarning barcha shakllari (analitikning, analyticsdagi va h.k.)
 # bitta so'rov bilan qamrab olinadi.
 SEARCH_KEYWORDS = [
-    "analitik", "analitika", "стажер", "amaliyot", "intern", "internship", "excel",
-    "analyst", "analytic", "analytics",
-    "аналитик", "аналитика", "аналист",
-    "data", "дата",
+    "analitik", "стажер", "intern",
+    "analyst", "analytic",
+    "аналитик", "аналист", "data", "дата",
 ]
 
 # Sarlavhada shu so'zlardan (prefiks sifatida, so'z chegarasi bilan) biri
