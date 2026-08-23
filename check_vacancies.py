@@ -18,6 +18,7 @@ Ishlash printsipi:
 import html
 import json
 import os
+import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -38,7 +39,7 @@ HH_AREA_ID = 2759  # Toshkent
 # 2) shu ildizlarning barcha shakllari (analitikning, analyticsdagi va h.k.)
 # bitta so'rov bilan qamrab olinadi.
 SEARCH_KEYWORDS = [
-    "analitik", "стажер", "intern",
+    "стажер", "intern",
     "analyst", "analytic",
     "аналитик", "аналист", "data", "дата",
 ]
@@ -58,9 +59,29 @@ MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
                    # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
                    # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
-MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni
-MAX_RETRIES = 3  # 429 (Too Many Requests) xatosida qayta urinishlar soni
-RETRY_BACKOFF_SECONDS = 3  # har qayta urinishda kutish (progressiv ravishda oshadi)
+MAX_WORKERS = 4  # bir vaqtda parallel yuboriladigan so'rovlar soni.
+                  # Ataylab kalit so'zlar sonidan (9) kamroq qilib
+                  # qo'yilgan: barcha so'rovlarni BITTA ONDA (burst)
+                  # yuborish real foydalanuvchi trafigiga o'xshamaydi va
+                  # anti-bot/WAF tizimlari tomonidan shubhali deb
+                  # belgilanish ehtimolini oshiradi. REQUEST_JITTER bilan
+                  # birga so'rovlar vaqt bo'yicha "yoyilib" yuboriladi.
+MAX_RETRIES = 3  # 429 (Too Many Requests) VA ulanish xatosi/timeout'da qayta urinishlar soni
+RETRY_BACKOFF_SECONDS = 2  # har qayta urinishda kutish (progressiv ravishda oshadi)
+REQUEST_JITTER_MAX_SECONDS = 1.5  # har bir so'rovdan oldin 0 dan shu qadargacha
+                                   # tasodifiy kutish — barcha so'rovlar bir
+                                   # zumda emas, sekundlar davomida "tabiiy"
+                                   # tarqalib yuboriladi
+
+# (connect_timeout, read_timeout) — ikkiga bo'lingan timeout:
+# - connect_timeout: hh.uz bilan TCP ulanish o'rnatilishini kutish vaqti.
+#   Server umuman javob bermay qolsa (masalan vaqtinchalik bloklansa),
+#   bu qadar kutib, keyin tezroq qayta urinib ko'ramiz — 30 soniya
+#   behuda sarflanmaydi.
+# - read_timeout: ulanish o'rnatilgandan keyin javob (RSS ma'lumoti)
+#   kelishini kutish vaqti — bu birmuncha uzunroq, chunki server sekin
+#   javob berishi mumkin.
+REQUEST_TIMEOUT = (8, 20)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -156,12 +177,17 @@ def parse_pub_date(item):
     return None
 
 
-def fetch_vacancies_for_keyword(keyword):
+def fetch_vacancies_for_keyword(session, keyword):
     """Bitta kalit so'z uchun RSS'dan vakansiyalarni oladi.
-    429 (Too Many Requests) xatosida MAX_RETRIES marta progressiv
-    kutish bilan qayta urinadi. Boshqa xatolarda (tarmoq, parsing va h.k.)
-    butun skriptni to'xtatmaslik uchun bo'sh ro'yxat qaytaradi va
-    xatoni konsolga chiqaradi."""
+    429 (Too Many Requests) xatosida VA ulanish xatosi/timeout'da
+    MAX_RETRIES marta progressiv kutish bilan qayta urinadi (timeout
+    qisqartirilgani uchun bu behuda vaqt sarflamaydi). Boshqa xatolarda
+    (parsing va h.k.) butun skriptni to'xtatmaslik uchun bo'sh ro'yxat
+    qaytaradi va xatoni konsolga chiqaradi."""
+    # So'rovlar barchasi bir zumda (burst) emas, sekundlar davomida
+    # tasodifiy tarqalib yuborilishi uchun kichik kutish
+    time.sleep(random.uniform(0, REQUEST_JITTER_MAX_SECONDS))
+
     params = {
         "text": keyword,
         "area": HH_AREA_ID,
@@ -171,7 +197,7 @@ def fetch_vacancies_for_keyword(keyword):
     resp = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
+            resp = session.get(RSS_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 429:
                 wait = RETRY_BACKOFF_SECONDS * attempt
                 print(f"[{keyword}] 429 (Too Many Requests) — {wait} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
@@ -180,13 +206,14 @@ def fetch_vacancies_for_keyword(keyword):
             resp.raise_for_status()
             break
         except requests.RequestException as e:
-            print(f"[{keyword}] So'rov xatosi: {e}")
             resp = None
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF_SECONDS * attempt
+                print(f"[{keyword}] So'rov xatosi ({attempt}/{MAX_RETRIES}): {e} — {wait} sek kutib qayta urinilmoqda")
+                time.sleep(wait)
+                continue
+            print(f"[{keyword}] So'rov xatosi ({MAX_RETRIES} urinishdan keyin ham): {e}")
             break
-    else:
-        # for-else: barcha urinishlar 429 bilan tugadi
-        print(f"[{keyword}] {MAX_RETRIES} urinishdan keyin ham 429 xatosi — bu kalit so'z o'tkazib yuborildi")
-        return []
 
     if resp is None:
         return []
@@ -232,9 +259,16 @@ def fetch_vacancies():
     seen_links = set()
     all_items = []
 
+    # Bitta Session barcha so'rovlar uchun ulashiladi — bu TCP/TLS
+    # ulanishlarni qayta ishlatish (connection pooling) imkonini beradi,
+    # har bir so'rov uchun alohida ulanish ochishga qaraganda tezroq.
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
+    session.mount("https://", adapter)
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_keyword = {
-            executor.submit(fetch_vacancies_for_keyword, keyword): keyword
+            executor.submit(fetch_vacancies_for_keyword, session, keyword): keyword
             for keyword in SEARCH_KEYWORDS
         }
         for future in as_completed(future_to_keyword):
