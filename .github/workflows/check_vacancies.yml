@@ -2,7 +2,7 @@ name: Check hh.uz data analytics vacancies
 
 on:
   schedule:
-    # Har 30 daqiqada ishga tushadi (UTC vaqti bo'yicha)
+    # Har 5 daqiqada ishga tushadi (UTC vaqti bo'yicha)
     - cron: "*/5 * * * *"
   workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
 
@@ -22,6 +22,14 @@ jobs:
 
       - name: Kutubxonalarni o'rnatish
         run: pip install -r requirements.txt
+
+      - name: Tarmoq diagnostikasi (hh.uz'ga ulanishni tekshirish)
+        continue-on-error: true
+        run: |
+          echo "--- curl orqali tashkent.hh.uz ---"
+          curl -sS -m 10 -o /dev/null -w "HTTP status: %{http_code} | Vaqt: %{time_total}s\n" https://tashkent.hh.uz/ || echo "curl HAM ulana olmadi — bu haqiqiy tarmoq/IP darajasidagi blok"
+          echo "--- DNS tekshiruvi ---"
+          getent hosts tashkent.hh.uz || echo "DNS orqali topilmadi"
 
       - name: Vakansiyalarni tekshirish va Telegramga yuborish
         env:
