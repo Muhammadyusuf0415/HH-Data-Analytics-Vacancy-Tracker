@@ -18,12 +18,10 @@ Ishlash printsipi:
 import html
 import json
 import os
-import random
 import re
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import requests
@@ -33,55 +31,57 @@ HH_AREA_ID = 2759  # Toshkent
 # hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
 # qaytarib yuboradi), shuning uchun har bir so'z alohida so'rov sifatida
 # yuboriladi va natijalar keyin birlashtiriladi.
-# Ro'yxat ataylab qisqa va keng ildiz so'zlardan iborat (aniq iboralar
-# o'rniga), shunda: 1) hh.uz'ga yuboriladigan so'rovlar soni kamayadi
-# (tezroq ishlaydi, timeout bo'lganda ham umumiy kutish vaqti qisqaradi),
-# 2) shu ildizlarning barcha shakllari (analitikning, analyticsdagi va h.k.)
-# bitta so'rov bilan qamrab olinadi.
+# Bu ro'yxat ataylab keng ildiz so'zlardan ("анализ", "tahlil" kabi) qochadi,
+# chunki ular deyarli har qanday vakansiyada uchraydi (masalan "bozorni
+# tahlil qilish", "moliyaviy anализ") va noaniq natija beradi. Buning o'rniga
+# aynan data analytics kasbiga (va unga yaqin rollarga) tegishli aniq
+# iboralar ishlatiladi.
 SEARCH_KEYWORDS = [
-    "стажер", "intern",
-    "analyst", "analytic",
-    "аналитик", "аналист", "data", "дата",
+    # --- Data Analyst / Analytics ---
+    "data analyst",
+    "data analytics",
+    "аналитик данных",
+    "аналитик по данным",
+    "дата-аналитик",
+    "дата аналитик",
+    "data analytic",
+    # --- Data Scientist / Engineer ---
+    "data scientist",
+    "data engineer",
+    "дата-инженер",
+    "инженер данных",
+    "data engineering",
+    "big data",
+    "machine learning engineer",
+    "ML engineer",
+    # --- BI (Business Intelligence) ---
+    "BI аналитик",
+    "BI-аналитик",
+    "business intelligence",
+    "BI developer",
+    "Power BI",
+    "Tableau",
+    "analytics engineer",
+    # --- Yaqin/qo'shni rollar ---
+    "product analyst",
+    "продуктовый аналитик",
+    "бизнес-аналитик",
+    "business analyst",
+    "quantitative analyst",
+    "marketing analyst",
+    "маркетинговый аналитик",
+    "financial analyst",
+    "финансовый аналитик",
+    "web analytics",
+    "веб-аналитик",
+    # --- O'zbekcha ---
+    "ma'lumotlar tahlilchisi",
 ]
-
-# Sarlavhada shu so'zlardan (prefiks sifatida, so'z chegarasi bilan) biri
-# uchrasa ham vakansiya qabul qilinadi (masalan "analitik" so'zi
-# "analitikning", "analitikaga" kabi qo'shimchali shakllarni ham qamrab
-# oladi). \b (so'z chegarasi) tufayli "bilan", "database" kabi so'zlar
-# ichidagi tasodifiy moslik hisobga olinmaydi.
-ROOT_PATTERNS = [re.compile(rf"\b{re.escape(w)}\w*", re.IGNORECASE) for w in SEARCH_KEYWORDS]
 
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
-MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
-                   # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
-                   # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
-
-MAX_WORKERS = 4  # bir vaqtda parallel yuboriladigan so'rovlar soni.
-                  # Ataylab kalit so'zlar sonidan (9) kamroq qilib
-                  # qo'yilgan: barcha so'rovlarni BITTA ONDA (burst)
-                  # yuborish real foydalanuvchi trafigiga o'xshamaydi va
-                  # anti-bot/WAF tizimlari tomonidan shubhali deb
-                  # belgilanish ehtimolini oshiradi. REQUEST_JITTER bilan
-                  # birga so'rovlar vaqt bo'yicha "yoyilib" yuboriladi.
-MAX_RETRIES = 3  # 429 (Too Many Requests) VA ulanish xatosi/timeout'da qayta urinishlar soni
-RETRY_BACKOFF_SECONDS = 2  # har qayta urinishda kutish (progressiv ravishda oshadi)
-REQUEST_JITTER_MAX_SECONDS = 1.5  # har bir so'rovdan oldin 0 dan shu qadargacha
-                                   # tasodifiy kutish — barcha so'rovlar bir
-                                   # zumda emas, sekundlar davomida "tabiiy"
-                                   # tarqalib yuboriladi
-
-# (connect_timeout, read_timeout) — ikkiga bo'lingan timeout:
-# - connect_timeout: hh.uz bilan TCP ulanish o'rnatilishini kutish vaqti.
-#   Server umuman javob bermay qolsa (masalan vaqtinchalik bloklansa),
-#   bu qadar kutib, keyin tezroq qayta urinib ko'ramiz — 30 soniya
-#   behuda sarflanmaydi.
-# - read_timeout: ulanish o'rnatilgandan keyin javob (RSS ma'lumoti)
-#   kelishini kutish vaqti — bu birmuncha uzunroq, chunki server sekin
-#   javob berishi mumkin.
-REQUEST_TIMEOUT = (8, 20)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -117,113 +117,37 @@ def strip_html(text):
 
 
 def matched_keyword(title):
-    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi ildiz so'zlardan (va ularning
-    qo'shimchali shakllaridan) biri bor-yo'qligini tekshiradi. hh.uz RSS
-    qidiruvi "fuzzy" ishlaydi (tavsifda yoki mos kelmaydigan bo'limda so'z
-    uchrasa ham natija qaytaradi), shuning uchun faqat SARLAVHADA aynan mos
-    so'z bo'lgan vakansiyalar qabul qilinadi. Mos kelgan so'zni qaytaradi,
+    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi so'zlardan biri bor-yo'qligini
+    tekshiradi. hh.uz RSS qidiruvi "fuzzy" ishlaydi (tavsifda yoki mos
+    kelmaydigan bo'limda so'z uchrasa ham natija qaytaradi — masalan
+    "Project Manager"), shuning uchun faqat SARLAVHADA aynan mos so'z
+    bo'lgan vakansiyalar qabul qilinadi. Mos kelgan so'zni qaytaradi,
     aks holda None."""
     title_lower = title.lower()
-
-    for pattern in ROOT_PATTERNS:
-        match = pattern.search(title_lower)
-        if match:
-            return match.group(0)
-
+    for keyword in SEARCH_KEYWORDS:
+        if keyword.lower() in title_lower:
+            return keyword
     return None
 
 
 def parse_pub_date(item):
-    """RSS'dagi pubDate maydonini parse qiladi. hh.uz odatda RFC-2822
-    formatini ishlatadi ("Mon, 17 Aug 2026 10:00:00 +0500"), lekin ehtiyot
-    chorasi sifatida ISO-8601 formatini ham ("2026-08-17T10:00:00+05:00")
-    sinab ko'ramiz.
-
-    Agar pubDate bo'sh yoki parse qilib bo'lmasa (amalda hh.uz buni ko'pincha
-    bo'sh qoldirar ekan), TAVSIF matnidagi "Создана: DD.MM.YYYY" formatidagi
-    sanani zaxira manba sifatida ishlatamiz — bu aniq soatni bermaydi, lekin
-    kun aniqligida ishonchli."""
-    raw = item.findtext("pubDate", default="").strip()
-
-    if raw:
-        try:
-            return parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
-            pass
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except ValueError:
-            pass
-
-    # Zaxira: tavsifdagi "Создана: DD.MM.YYYY" sanasi (Toshkent vaqti, UTC+5)
-    description_raw = item.findtext("description", default="")
-    match = re.search(r"Создана:\s*(\d{2})\.(\d{2})\.(\d{4})", description_raw)
-    if match:
-        day, month, year = match.groups()
-        try:
-            tashkent_tz = timezone(timedelta(hours=5))
-            dt = datetime(int(year), int(month), int(day), tzinfo=tashkent_tz)
-            return dt.astimezone(timezone.utc)
-        except ValueError:
-            pass
-
-    if raw:
-        print(f"[debug] pubDate parse qilinmadi, xom qiymat: {raw!r}")
-    else:
-        print("[debug] pubDate bo'sh va tavsifda ham 'Создана:' sanasi topilmadi")
-    return None
+    raw = item.findtext("pubDate", default="")
+    try:
+        return parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
 
 
-def fetch_vacancies_for_keyword(session, keyword):
-    """Bitta kalit so'z uchun RSS'dan vakansiyalarni oladi.
-    429 (Too Many Requests) xatosida VA ulanish xatosi/timeout'da
-    MAX_RETRIES marta progressiv kutish bilan qayta urinadi (timeout
-    qisqartirilgani uchun bu behuda vaqt sarflamaydi). Boshqa xatolarda
-    (parsing va h.k.) butun skriptni to'xtatmaslik uchun bo'sh ro'yxat
-    qaytaradi va xatoni konsolga chiqaradi."""
-    # So'rovlar barchasi bir zumda (burst) emas, sekundlar davomida
-    # tasodifiy tarqalib yuborilishi uchun kichik kutish
-    time.sleep(random.uniform(0, REQUEST_JITTER_MAX_SECONDS))
-
+def fetch_vacancies_for_keyword(keyword):
     params = {
         "text": keyword,
         "area": HH_AREA_ID,
         "order_by": "publication_time",
     }
+    resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
 
-    resp = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = session.get(RSS_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 429:
-                wait = RETRY_BACKOFF_SECONDS * attempt
-                print(f"[{keyword}] 429 (Too Many Requests) — {wait} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            break
-        except requests.RequestException as e:
-            resp = None
-            if attempt < MAX_RETRIES:
-                wait = RETRY_BACKOFF_SECONDS * attempt
-                print(f"[{keyword}] So'rov xatosi ({attempt}/{MAX_RETRIES}): {e} — {wait} sek kutib qayta urinilmoqda")
-                time.sleep(wait)
-                continue
-            print(f"[{keyword}] So'rov xatosi ({MAX_RETRIES} urinishdan keyin ham): {e}")
-            break
-
-    if resp is None:
-        return []
-
-    try:
-        root = ET.fromstring(resp.content)
-    except ET.ParseError as e:
-        print(f"[{keyword}] RSS parsing xatosi: {e}")
-        return []
-
+    root = ET.fromstring(resp.content)
     items = []
     for item in root.findall("./channel/item"):
         link = item.findtext("link", default="").strip()
@@ -231,7 +155,7 @@ def fetch_vacancies_for_keyword(session, keyword):
         description = strip_html(item.findtext("description", default=""))
         pub_date = parse_pub_date(item)
 
-        # Faqat sarlavhasi bizning kalit so'z/ildizlarimizdan biriga mos
+        # Faqat sarlavhasi bizning 34 ta kalit so'zdan biriga aynan mos
         # keladigan vakansiyalarni qabul qilamiz (hh.uz'ning aloqasiz
         # natijalar chiqarishining oldini olish uchun, masalan "Project
         # Manager").
@@ -249,65 +173,22 @@ def fetch_vacancies_for_keyword(session, keyword):
 
 
 def fetch_vacancies():
-    """Har bir kalit so'z uchun so'rovlarni PARALLEL (MAX_WORKERS ta bir
-    vaqtda) yuboradi, natijalarni (link bo'yicha) takrorlanmasdan
-    birlashtiradi, eng yangilaridan boshlab saralaydi va faqat oxirgi
-    MAX_RESULTS_PER_RUN tasini qaytaradi.
-    Bitta kalit so'z bo'yicha so'rov muvaffaqiyatsiz tugasa ham
-    (fetch_vacancies_for_keyword ichida ushlanadi), qolgan kalit so'zlar
-    natijalari yo'qolmaydi."""
+    """Har bir kalit so'z uchun alohida so'rov yuboradi, natijalarni
+    (link bo'yicha) takrorlanmasdan birlashtiradi, eng yangilaridan
+    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi."""
     seen_links = set()
     all_items = []
-
-    # Bitta Session barcha so'rovlar uchun ulashiladi — bu TCP/TLS
-    # ulanishlarni qayta ishlatish (connection pooling) imkonini beradi,
-    # har bir so'rov uchun alohida ulanish ochishga qaraganda tezroq.
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
-    session.mount("https://", adapter)
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_keyword = {
-            executor.submit(fetch_vacancies_for_keyword, session, keyword): keyword
-            for keyword in SEARCH_KEYWORDS
-        }
-        for future in as_completed(future_to_keyword):
-            keyword = future_to_keyword[future]
-            try:
-                items = future.result()
-            except Exception as e:
-                # Kutilmagan xato — shu kalit so'zni o'tkazib yuboramiz,
-                # boshqalarga ta'sir qilmaydi.
-                print(f"[{keyword}] Kutilmagan xato: {e}")
-                items = []
-
-            for item in items:
-                if item["id"] and item["id"] not in seen_links:
-                    seen_links.add(item["id"])
-                    all_items.append(item)
+    for keyword in SEARCH_KEYWORDS:
+        for item in fetch_vacancies_for_keyword(keyword):
+            if item["id"] and item["id"] not in seen_links:
+                seen_links.add(item["id"])
+                all_items.append(item)
+        time.sleep(1)  # hh.uz serveriga hurmat: so'rovlar orasida kichik pauza
 
     # pub_date bo'yicha eng yangisidan eskisiga saralaymiz (sana topilmasa eng oxiriga tushadi)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
     all_items.sort(key=lambda v: v["pub_date"] or epoch, reverse=True)
-
-    # MAX_AGE_DAYS'dan eski e'lonlarni chiqarib tashlaymiz — bular seen_ids'da
-    # bo'lmasligi mumkin (masalan kalit so'z ro'yxati yangi kengaytirilgan
-    # bo'lsa), lekin ular haqiqatda "yangi vakansiya" emas.
-    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
-    no_date_count = sum(1 for v in all_items if not v["pub_date"])
-    fresh_items = [v for v in all_items if v["pub_date"] and v["pub_date"] >= cutoff]
-
-    print(
-        f"[debug] Kalit so'zlarga mos jami: {len(all_items)} | "
-        f"sana topilmagan (chiqarib tashlandi): {no_date_count} | "
-        f"oxirgi {MAX_AGE_DAYS} kun ichida: {len(fresh_items)}"
-    )
-    if all_items[:5]:
-        print("[debug] Eng so'nggi 5 ta topilgan (filtrgacha):")
-        for v in all_items[:5]:
-            print(f"  - {v['pub_date']}: {v['title']}")
-
-    return fresh_items[:MAX_RESULTS_PER_RUN]
+    return all_items[:MAX_RESULTS_PER_RUN]
 
 
 def format_message(vacancy):
@@ -319,25 +200,16 @@ def format_message(vacancy):
 
 
 def send_to_telegram(text):
-    """True/False qaytaradi — muvaffaqiyatli yuborildimi yoki yo'q.
-    Tarmoq/Telegram xatosida butun skriptni to'xtatmaydi, faqat shu
-    vakansiyani "yuborilmadi" deb belgilaydi (seen_ids'ga qo'shilmaydi,
-    keyingi ishga tushishda qayta urinilishi mumkin)."""
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
-    try:
-        resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=30)
-        if not resp.ok:
-            print(f"Telegramga yuborishda xatolik: {resp.status_code} {resp.text}")
-            return False
-        return True
-    except requests.RequestException as e:
-        print(f"Telegramga yuborishda tarmoq xatosi: {e}")
-        return False
+    resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=30)
+    if not resp.ok:
+        print(f"Telegramga yuborishda xatolik: {resp.status_code} {resp.text}")
+    resp.raise_for_status()
 
 
 def main():
@@ -351,27 +223,18 @@ def main():
     vacancies = fetch_vacancies()
 
     new_count = 0
-    try:
-        for vacancy in vacancies:
-            vac_id = vacancy["id"]
-            if not vac_id or vac_id in seen_ids:
-                continue
+    for vacancy in vacancies:
+        vac_id = vacancy["id"]
+        if not vac_id or vac_id in seen_ids:
+            continue
 
-            message = format_message(vacancy)
-            sent_ok = send_to_telegram(message)
-            if sent_ok:
-                seen_ids.add(vac_id)
-                new_count += 1
-                # Har muvaffaqiyatli yuborishdan keyin DARHOL saqlaymiz —
-                # shunda agar keyingi vakansiyani yuborishda xato bo'lsa
-                # yoki skript to'xtab qolsa, hozirgacha yuborilganlar
-                # qayta yuborilib qolmaydi.
-                save_seen_ids(seen_ids)
-            time.sleep(1)  # Telegram rate limit uchun kichik pauza
-    finally:
-        # Har ehtimolga qarshi yakunida yana bir bor saqlaymiz.
-        save_seen_ids(seen_ids)
+        message = format_message(vacancy)
+        send_to_telegram(message)
+        seen_ids.add(vac_id)
+        new_count += 1
+        time.sleep(1)  # Telegram rate limit uchun kichik pauza
 
+    save_seen_ids(seen_ids)
     print(f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}")
 
 
