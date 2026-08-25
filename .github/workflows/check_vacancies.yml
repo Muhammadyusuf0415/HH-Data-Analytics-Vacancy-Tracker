@@ -2,13 +2,18 @@ name: Check hh.uz data analytics vacancies
 
 on:
   schedule:
-    # Har 30 daqiqada ishga tushadi (UTC vaqti bo'yicha)
-    - cron: "*/5 * * * *"
+    # Har 15 daqiqada ishga tushadi (UTC vaqti bo'yicha).
+    # Eslatma: avval "*/5" edi (har 5 daqiqa), bu hh.uz'ga juda tez-tez
+    # so'rov yuborib, ba'zan vaqtincha bloklanishga (connection timeout)
+    # sabab bo'lgan bo'lishi mumkin. 15 daqiqa freshness va barqarorlik
+    # o'rtasida yaxshiroq muvozanat.
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # skript osilib qolsa, job cheksiz kutmasin
     permissions:
       contents: write
     steps:
