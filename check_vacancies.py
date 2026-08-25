@@ -41,6 +41,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# hh.uz RSS'ida ba'zi standart bo'lmagan namespace'lar ishlatilishi mumkin
+# (masalan Dublin Core <dc:date>). Sana shu yerdan ham qidiriladi.
+XML_NAMESPACES = {
+    "dc": "http://purl.org/dc/elements/1.1/",
+    "atom": "http://www.w3.org/2005/Atom",
+}
+
 # ---------- SOZLAMALAR ----------
 HH_AREA_ID = 2759  # Toshkent
 # hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
@@ -193,15 +200,58 @@ def matched_keyword(title):
     return None
 
 
-def parse_pub_date(item):
-    raw = item.findtext("pubDate", default="")
+def _try_rfc822(raw):
+    """RSS standart formati: 'Tue, 25 Aug 2026 10:00:00 +0500'."""
     try:
         dt = parsedate_to_datetime(raw)
-        if dt is not None and dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, IndexError):
         return None
+    if dt is not None and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _try_iso8601(raw):
+    """ISO 8601 formati: '2026-08-25T10:00:00+05:00' (masalan <dc:date>
+    yoki <atom:published> elementlarida uchraydi)."""
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    # 'Z' -> '+00:00', Python'ning fromisoformat'i buni to'g'ridan-to'g'ri
+    # tushunmaydi.
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+# Sana qidiriladigan joylar, ustuvorlik tartibida: (element yo'li, parser).
+# hh.uz'ning aynan qaysi elementni ishlatishi vaqt o'tishi bilan
+# o'zgarishi mumkin, shuning uchun bir nechta variant sinab ko'riladi.
+PUB_DATE_SOURCES = [
+    ("pubDate", _try_rfc822),
+    ("dc:date", _try_iso8601),
+    ("date", _try_iso8601),
+    ("published", _try_iso8601),
+    ("atom:published", _try_iso8601),
+    ("atom:updated", _try_iso8601),
+]
+
+
+def parse_pub_date(item):
+    for path, parser in PUB_DATE_SOURCES:
+        raw = item.findtext(path, default=None, namespaces=XML_NAMESPACES)
+        if not raw:
+            continue
+        dt = parser(raw)
+        if dt is not None:
+            return dt
+    return None
 
 
 def is_today(pub_date):
@@ -228,6 +278,7 @@ class Stats:
         self.no_pub_date = 0
         self.not_today = 0
         self.accepted = 0
+        self.sample_dumped = False  # bir marta xom XML namunasi chiqarilishi uchun
 
 
 def fetch_vacancies_for_keyword(session, keyword, stats):
@@ -270,6 +321,14 @@ def fetch_vacancies_for_keyword(session, keyword, stats):
         if ONLY_TODAY:
             if pub_date is None:
                 stats.no_pub_date += 1
+                if not stats.sample_dumped:
+                    # Diagnostika: sana topilmagan birinchi elementning
+                    # xom XML tuzilishini bir marta log'ga chiqaramiz —
+                    # shunda hh.uz aynan qaysi teg/formatni ishlatayotgani
+                    # aniq ko'rinadi va parserni shunga moslash mumkin.
+                    stats.sample_dumped = True
+                    raw_xml = ET.tostring(item, encoding="unicode")
+                    print(f"  🔍 Diagnostika (sana topilmadi), xom XML:\n{raw_xml}")
                 continue
             if not is_today(pub_date):
                 stats.not_today += 1
