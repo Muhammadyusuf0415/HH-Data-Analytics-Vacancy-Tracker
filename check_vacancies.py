@@ -35,6 +35,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -96,6 +97,12 @@ RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
+
+# Faqat SHU KUNGI (Toshkent vaqti bo'yicha) e'lon qilingan vakansiyalar
+# yuboriladi — eski (kecha yoki undan oldingi) e'lonlar RSS'da hali ham
+# ko'rinib turishi mumkin, lekin ular kerak emas.
+TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
+ONLY_TODAY = True
 
 # hh.uz ba'zan (ayniqsa GitHub Actions kabi datacenter IP'lardan tez-tez
 # so'rov yuborilganda) ulanishni "osilтirib qo'yadi" (connect timeout).
@@ -189,9 +196,23 @@ def matched_keyword(title):
 def parse_pub_date(item):
     raw = item.findtext("pubDate", default="")
     try:
-        return parsedate_to_datetime(raw)
+        dt = parsedate_to_datetime(raw)
+        if dt is not None and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except (TypeError, ValueError):
         return None
+
+
+def is_today(pub_date):
+    """pub_date Toshkent vaqti bo'yicha BUGUNGI kunga to'g'ri kelsa True
+    qaytaradi. Sana aniqlanmagan (None) bo'lsa — ishonchli emas, shuning
+    uchun False qaytariladi (xavfsizroq: eski/noaniq e'lon yubormaslik)."""
+    if pub_date is None:
+        return False
+    local_date = pub_date.astimezone(TASHKENT_TZ).date()
+    today = datetime.now(TASHKENT_TZ).date()
+    return local_date == today
 
 
 def fetch_vacancies_for_keyword(session, keyword):
@@ -225,6 +246,11 @@ def fetch_vacancies_for_keyword(session, keyword):
         # natijalar chiqarishining oldini olish uchun, masalan "Project
         # Manager").
         if not matched_keyword(title):
+            continue
+
+        # Faqat BUGUNGI kunda e'lon qilingan vakansiyalar kerak — eski
+        # e'lonlar (kecha va undan oldingi) o'tkazib yuboriladi.
+        if ONLY_TODAY and not is_today(pub_date):
             continue
 
         items.append({
