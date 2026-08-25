@@ -12,12 +12,24 @@ Ishlash printsipi:
   vakansiyalarini oladi.
 - seen_ids.json faylida avval yuborilgan vakansiyalar linkini saqlaydi,
   shu bois har vakansiya faqat BIR MARTA yuboriladi.
-- GitHub Actions orqali muntazam (masalan har 30 daqiqada) ishga tushiriladi.
+- GitHub Actions orqali muntazam (har 15 daqiqada) ishga tushiriladi.
+
+TARMOQ XATOLARI HAQIDA: hh.uz ba'zan GitHub Actions kabi datacenter
+IP'lardan kelayotgan so'rovlarni (ayniqsa tez-tez so'ralganda) vaqtincha
+"osiltirib qo'yishi" mumkin (connect timeout). Shu sababli:
+  1) har bir kalit so'z bo'yicha so'rov mustaqil urinish hisoblanadi —
+     biri muvaffaqiyatsiz bo'lsa, faqat o'sha so'z o'tkazib yuboriladi,
+     qolganlari davom etadi (butun skript yiqilib qolmaydi);
+  2) vaqtinchalik xatolarda avtomatik qayta urinish (retry + backoff)
+     ishlatiladi;
+  3) so'rovlar orasidagi pauza tasodifiy (jitter) qilingan, bot
+     sifatida aniqlanish ehtimolini kamaytirish uchun.
 """
 
 import html
 import json
 import os
+import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -25,6 +37,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ---------- SOZLAMALAR ----------
 HH_AREA_ID = 2759  # Toshkent
@@ -83,16 +97,58 @@ SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
 
+# hh.uz ba'zan (ayniqsa GitHub Actions kabi datacenter IP'lardan tez-tez
+# so'rov yuborilganda) ulanishni "osilтirib qo'yadi" (connect timeout).
+# Shu sababli so'rov vaqti qisqartirildi (tezroq aniqlash uchun) va
+# vaqtinchalik xatolarda avtomatik qayta urinish (retry) qo'shildi.
+CONNECT_TIMEOUT = 10
+READ_TIMEOUT = 20
+REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
+MAX_RETRIES = 2
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+# Bir nechta real brauzer User-Agent'lari orasida tasodifiy tanlanadi —
+# bu so'rovlarni bir xil "signature"ga ega bo'lib, bot sifatida
+# aniqlanishi ehtimolini biroz kamaytiradi.
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36",
+]
+
+
+def build_headers():
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+
+
+def build_session():
+    """Vaqtinchalik tarmoq xatolarida (timeout, 5xx) avtomatik qayta
+    urinadigan (retry) sessiya yaratadi, shunda bitta muvaffaqiyatsiz
+    so'rov butun skriptni yiqitmaydi."""
+    session = requests.Session()
+    retry = Retry(
+        total=MAX_RETRIES,
+        connect=MAX_RETRIES,
+        read=MAX_RETRIES,
+        backoff_factor=1.5,  # 0s, 1.5s, 3s ...
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        raise_on_status=False,
     )
-}
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def load_seen_ids():
@@ -138,13 +194,22 @@ def parse_pub_date(item):
         return None
 
 
-def fetch_vacancies_for_keyword(keyword):
+def fetch_vacancies_for_keyword(session, keyword):
+    """Bitta kalit so'z bo'yicha RSS'ni oladi. Tarmoq xatoligi yoki
+    noto'g'ri javob bo'lsa, istisno tashlaydi — chaqiruvchi funksiya buni
+    ushlab, faqat shu kalit so'zni o'tkazib yuboradi (butun skript
+    to'xtamaydi)."""
     params = {
         "text": keyword,
         "area": HH_AREA_ID,
         "order_by": "publication_time",
     }
-    resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
+    resp = session.get(
+        RSS_URL,
+        params=params,
+        headers=build_headers(),
+        timeout=REQUEST_TIMEOUT,
+    )
     resp.raise_for_status()
 
     root = ET.fromstring(resp.content)
@@ -175,15 +240,47 @@ def fetch_vacancies_for_keyword(keyword):
 def fetch_vacancies():
     """Har bir kalit so'z uchun alohida so'rov yuboradi, natijalarni
     (link bo'yicha) takrorlanmasdan birlashtiradi, eng yangilaridan
-    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi."""
+    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi.
+
+    MUHIM: bitta kalit so'z bo'yicha so'rov muvaffaqiyatsiz bo'lsa (masalan,
+    hh.uz vaqtincha ulanishni to'xtatib qo'ysa), butun tekshiruv
+    to'xtamaydi — shu kalit so'z o'tkazib yuboriladi va qolganlari bilan
+    davom etiladi. Aks holda bitta vaqtinchalik tarmoq xatoligi barcha
+    vakansiyalarni (hattoki muvaffaqiyatli topilganlarini ham) yo'qotib
+    qo'yardi.
+    """
+    session = build_session()
     seen_links = set()
     all_items = []
+    failed_keywords = []
+
     for keyword in SEARCH_KEYWORDS:
-        for item in fetch_vacancies_for_keyword(keyword):
-            if item["id"] and item["id"] not in seen_links:
-                seen_links.add(item["id"])
-                all_items.append(item)
-        time.sleep(1)  # hh.uz serveriga hurmat: so'rovlar orasida kichik pauza
+        try:
+            for item in fetch_vacancies_for_keyword(session, keyword):
+                if item["id"] and item["id"] not in seen_links:
+                    seen_links.add(item["id"])
+                    all_items.append(item)
+        except (requests.exceptions.RequestException, ET.ParseError) as exc:
+            failed_keywords.append(keyword)
+            print(f"  ⚠️  '{keyword}' uchun so'rov muvaffaqiyatsiz bo'ldi: {exc}")
+            continue
+        finally:
+            # hh.uz serveriga hurmat: so'rovlar orasida tasodifiy pauza
+            # (bir xil ritm bot sifatida aniqlanish xavfini oshiradi)
+            time.sleep(random.uniform(0.8, 1.8))
+
+    if failed_keywords:
+        print(
+            f"Jami {len(failed_keywords)}/{len(SEARCH_KEYWORDS)} ta kalit so'z "
+            f"bo'yicha so'rov amalga oshmadi (hh.uz vaqtincha ulanmagan bo'lishi "
+            f"mumkin): {', '.join(failed_keywords)}"
+        )
+    if failed_keywords and len(failed_keywords) == len(SEARCH_KEYWORDS):
+        print(
+            "Barcha so'rovlar muvaffaqiyatsiz bo'ldi — hh.uz ushbu ishga "
+            "tushish paytida umuman ulanmagan. Keyingi ishga tushishda "
+            "qayta urinib ko'riladi."
+        )
 
     # pub_date bo'yicha eng yangisidan eskisiga saralaymiz (sana topilmasa eng oxiriga tushadi)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -223,19 +320,31 @@ def main():
     vacancies = fetch_vacancies()
 
     new_count = 0
+    failed_count = 0
     for vacancy in vacancies:
         vac_id = vacancy["id"]
         if not vac_id or vac_id in seen_ids:
             continue
 
         message = format_message(vacancy)
-        send_to_telegram(message)
+        try:
+            send_to_telegram(message)
+        except requests.exceptions.RequestException as exc:
+            # Telegramga yuborishda xatolik bo'lsa, shu vakansiyani "seen"
+            # deb belgilamaymiz — keyingi ishga tushishda qayta uriniladi.
+            failed_count += 1
+            print(f"  ⚠️  '{vacancy['title']}' yuborilmadi: {exc}")
+            continue
+
         seen_ids.add(vac_id)
         new_count += 1
         time.sleep(1)  # Telegram rate limit uchun kichik pauza
 
     save_seen_ids(seen_ids)
-    print(f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}")
+    print(
+        f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}"
+        + (f" (yuborilmadi: {failed_count})" if failed_count else "")
+    )
 
 
 if __name__ == "__main__":
