@@ -230,27 +230,24 @@ def _try_iso8601(raw):
     return dt
 
 
-# Sana qidiriladigan joylar, ustuvorlik tartibida: (element yo'li, parser).
-# hh.uz'ning aynan qaysi elementni ishlatishi vaqt o'tishi bilan
-# o'zgarishi mumkin, shuning uchun bir nechta variant sinab ko'riladi.
-PUB_DATE_SOURCES = [
-    ("pubDate", _try_rfc822),
-    ("dc:date", _try_iso8601),
-    ("date", _try_iso8601),
-    ("published", _try_iso8601),
-    ("atom:published", _try_iso8601),
-    ("atom:updated", _try_iso8601),
-]
+# Sana qidiriladigan joylar, ustuvorlik tartibida. hh.uz turli
+# vaqtlarda turli formatlarda sana yuborishi mumkin (masalan RFC822 yoki
+# millisekundli ISO 8601 — "2026-08-25T10:05:00.342+03:00"), shuning
+# uchun har bir topilgan matnga BARCHA parserlar ketma-ket sinab
+# ko'riladi, faqat elementning o'zigina emas.
+PUB_DATE_PATHS = ["pubDate", "dc:date", "date", "published", "atom:published", "atom:updated"]
+PUB_DATE_PARSERS = [_try_rfc822, _try_iso8601]
 
 
 def parse_pub_date(item):
-    for path, parser in PUB_DATE_SOURCES:
+    for path in PUB_DATE_PATHS:
         raw = item.findtext(path, default=None, namespaces=XML_NAMESPACES)
         if not raw:
             continue
-        dt = parser(raw)
-        if dt is not None:
-            return dt
+        for parser in PUB_DATE_PARSERS:
+            dt = parser(raw)
+            if dt is not None:
+                return dt
     return None
 
 
