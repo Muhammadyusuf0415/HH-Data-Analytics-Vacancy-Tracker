@@ -215,7 +215,22 @@ def is_today(pub_date):
     return local_date == today
 
 
-def fetch_vacancies_for_keyword(session, keyword):
+class Stats:
+    """Diagnostika uchun: nechta e'lon RSS'dan kelgani, nechtasi sarlavha
+    bo'yicha mos kelgani, nechtasi sanasi noaniqligi sabab va nechtasi
+    "bugun emas" sabab filtrlanib ketgani hisoblanadi. Shunda "0 ta yangi"
+    natijasi chiqsa — sababi aniq ko'rinadi (haqiqatan yangi yo'qmi, yoki
+    filtr xato ishlayaptimi)."""
+
+    def __init__(self):
+        self.total_rss_items = 0
+        self.title_matched = 0
+        self.no_pub_date = 0
+        self.not_today = 0
+        self.accepted = 0
+
+
+def fetch_vacancies_for_keyword(session, keyword, stats):
     """Bitta kalit so'z bo'yicha RSS'ni oladi. Tarmoq xatoligi yoki
     noto'g'ri javob bo'lsa, istisno tashlaydi — chaqiruvchi funksiya buni
     ushlab, faqat shu kalit so'zni o'tkazib yuboradi (butun skript
@@ -236,6 +251,7 @@ def fetch_vacancies_for_keyword(session, keyword):
     root = ET.fromstring(resp.content)
     items = []
     for item in root.findall("./channel/item"):
+        stats.total_rss_items += 1
         link = item.findtext("link", default="").strip()
         title = item.findtext("title", default="Noma'lum lavozim").strip()
         description = strip_html(item.findtext("description", default=""))
@@ -247,12 +263,19 @@ def fetch_vacancies_for_keyword(session, keyword):
         # Manager").
         if not matched_keyword(title):
             continue
+        stats.title_matched += 1
 
         # Faqat BUGUNGI kunda e'lon qilingan vakansiyalar kerak — eski
         # e'lonlar (kecha va undan oldingi) o'tkazib yuboriladi.
-        if ONLY_TODAY and not is_today(pub_date):
-            continue
+        if ONLY_TODAY:
+            if pub_date is None:
+                stats.no_pub_date += 1
+                continue
+            if not is_today(pub_date):
+                stats.not_today += 1
+                continue
 
+        stats.accepted += 1
         items.append({
             "id": link,  # link vakansiya uchun noyob identifikator sifatida ishlatiladi
             "title": title,
@@ -279,10 +302,11 @@ def fetch_vacancies():
     seen_links = set()
     all_items = []
     failed_keywords = []
+    stats = Stats()
 
     for keyword in SEARCH_KEYWORDS:
         try:
-            for item in fetch_vacancies_for_keyword(session, keyword):
+            for item in fetch_vacancies_for_keyword(session, keyword, stats):
                 if item["id"] and item["id"] not in seen_links:
                     seen_links.add(item["id"])
                     all_items.append(item)
@@ -294,6 +318,17 @@ def fetch_vacancies():
             # hh.uz serveriga hurmat: so'rovlar orasida tasodifiy pauza
             # (bir xil ritm bot sifatida aniqlanish xavfini oshiradi)
             time.sleep(random.uniform(0.8, 1.8))
+
+    print(
+        f"Diagnostika: RSS'dan jami {stats.total_rss_items} ta e'lon keldi, "
+        f"{stats.title_matched} tasi sarlavha bo'yicha mos keldi"
+        + (
+            f" ({stats.not_today} tasi bugungi emas, "
+            f"{stats.no_pub_date} tasining sanasi aniqlanmadi)"
+            if ONLY_TODAY else ""
+        )
+        + f", natijada {stats.accepted} ta qabul qilindi."
+    )
 
     if failed_keywords:
         print(
