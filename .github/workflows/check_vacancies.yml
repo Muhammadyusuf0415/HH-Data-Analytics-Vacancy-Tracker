@@ -14,6 +14,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10  # skript osilib qolsa, job cheksiz kutmasin
+    # Ikkita run bir vaqtda ishlab ketmasligi uchun (aks holda ikkalasi
+    # ham seen_ids.json'ni bir-biridan bexabar o'zgartirib, git push
+    # to'qnashuviga va oqibatda "eski vakansiya qayta yuborilishi"ga olib
+    # kelishi mumkin edi). Navbatdagi run avvalgisi tugaguncha kutadi.
+    concurrency:
+      group: check-vacancies
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -39,5 +46,14 @@ jobs:
           git config user.name "hh-vacancy-bot"
           git config user.email "actions@github.com"
           git add seen_ids.json
-          git diff --staged --quiet || git commit -m "Update seen vacancy ids"
-          git push
+          git diff --staged --quiet && exit 0
+          git commit -m "Update seen vacancy ids"
+          # Push vaqtida remote'da yangiroq commit bo'lib qolishi mumkin
+          # (masalan, boshqa bir run tezroq push qilgan bo'lsa) — shu
+          # sababli avval rebase qilib, so'ng push qilamiz, kerak bo'lsa
+          # bir necha marta qayta urinamiz.
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && break
+            echo "Push muvaffaqiyatsiz, qayta urinilmoqda ($i)..."
+            sleep 5
+          done
