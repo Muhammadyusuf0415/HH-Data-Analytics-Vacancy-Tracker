@@ -7,7 +7,7 @@ on:
     # so'rov yuborib, ba'zan vaqtincha bloklanishga (connection timeout)
     # sabab bo'lgan bo'lishi mumkin. 15 daqiqa freshness va barqarorlik
     # o'rtasida yaxshiroq muvozanat.
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
 
 jobs:
