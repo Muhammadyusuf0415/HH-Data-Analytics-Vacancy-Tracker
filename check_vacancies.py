@@ -12,41 +12,19 @@ Ishlash printsipi:
   vakansiyalarini oladi.
 - seen_ids.json faylida avval yuborilgan vakansiyalar linkini saqlaydi,
   shu bois har vakansiya faqat BIR MARTA yuboriladi.
-- GitHub Actions orqali muntazam (har 15 daqiqada) ishga tushiriladi.
-
-TARMOQ XATOLARI HAQIDA: hh.uz ba'zan GitHub Actions kabi datacenter
-IP'lardan kelayotgan so'rovlarni (ayniqsa tez-tez so'ralganda) vaqtincha
-"osiltirib qo'yishi" mumkin (connect timeout). Shu sababli:
-  1) har bir kalit so'z bo'yicha so'rov mustaqil urinish hisoblanadi —
-     biri muvaffaqiyatsiz bo'lsa, faqat o'sha so'z o'tkazib yuboriladi,
-     qolganlari davom etadi (butun skript yiqilib qolmaydi);
-  2) vaqtinchalik xatolarda avtomatik qayta urinish (retry + backoff)
-     ishlatiladi;
-  3) so'rovlar orasidagi pauza tasodifiy (jitter) qilingan, bot
-     sifatida aniqlanish ehtimolini kamaytirish uchun.
+- GitHub Actions orqali muntazam (masalan har 30 daqiqada) ishga tushiriladi.
 """
 
 import html
 import json
 import os
-import random
 import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from zoneinfo import ZoneInfo
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-# hh.uz RSS'ida ba'zi standart bo'lmagan namespace'lar ishlatilishi mumkin
-# (masalan Dublin Core <dc:date>). Sana shu yerdan ham qidiriladi.
-XML_NAMESPACES = {
-    "dc": "http://purl.org/dc/elements/1.1/",
-    "atom": "http://www.w3.org/2005/Atom",
-}
 
 # ---------- SOZLAMALAR ----------
 HH_AREA_ID = 2759  # Toshkent
@@ -105,64 +83,16 @@ SEEN_IDS_FILE = "seen_ids.json"
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
 
-# Faqat SHU KUNGI (Toshkent vaqti bo'yicha) e'lon qilingan vakansiyalar
-# yuboriladi — eski (kecha yoki undan oldingi) e'lonlar RSS'da hali ham
-# ko'rinib turishi mumkin, lekin ular kerak emas.
-TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
-ONLY_TODAY = True
-
-# hh.uz ba'zan (ayniqsa GitHub Actions kabi datacenter IP'lardan tez-tez
-# so'rov yuborilganda) ulanishni "osilтirib qo'yadi" (connect timeout).
-# Shu sababli so'rov vaqti qisqartirildi (tezroq aniqlash uchun) va
-# vaqtinchalik xatolarda avtomatik qayta urinish (retry) qo'shildi.
-CONNECT_TIMEOUT = 10
-READ_TIMEOUT = 20
-REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
-MAX_RETRIES = 2
-
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-# Bir nechta real brauzer User-Agent'lari orasida tasodifiy tanlanadi —
-# bu so'rovlarni bir xil "signature"ga ega bo'lib, bot sifatida
-# aniqlanishi ehtimolini biroz kamaytiradi.
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36",
-]
-
-
-def build_headers():
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-
-
-def build_session():
-    """Vaqtinchalik tarmoq xatolarida (timeout, 5xx) avtomatik qayta
-    urinadigan (retry) sessiya yaratadi, shunda bitta muvaffaqiyatsiz
-    so'rov butun skriptni yiqitmaydi."""
-    session = requests.Session()
-    retry = Retry(
-        total=MAX_RETRIES,
-        connect=MAX_RETRIES,
-        read=MAX_RETRIES,
-        backoff_factor=1.5,  # 0s, 1.5s, 3s ...
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=("GET",),
-        raise_on_status=False,
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+}
 
 
 def load_seen_ids():
@@ -200,106 +130,26 @@ def matched_keyword(title):
     return None
 
 
-def _try_rfc822(raw):
-    """RSS standart formati: 'Tue, 25 Aug 2026 10:00:00 +0500'."""
-    try:
-        dt = parsedate_to_datetime(raw)
-    except (TypeError, ValueError, IndexError):
-        return None
-    if dt is not None and dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def _try_iso8601(raw):
-    """ISO 8601 formati: '2026-08-25T10:00:00+05:00' (masalan <dc:date>
-    yoki <atom:published> elementlarida uchraydi)."""
-    if not raw:
-        return None
-    cleaned = raw.strip()
-    # 'Z' -> '+00:00', Python'ning fromisoformat'i buni to'g'ridan-to'g'ri
-    # tushunmaydi.
-    if cleaned.endswith("Z"):
-        cleaned = cleaned[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(cleaned)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-# Sana qidiriladigan joylar, ustuvorlik tartibida. hh.uz turli
-# vaqtlarda turli formatlarda sana yuborishi mumkin (masalan RFC822 yoki
-# millisekundli ISO 8601 — "2026-08-25T10:05:00.342+03:00"), shuning
-# uchun har bir topilgan matnga BARCHA parserlar ketma-ket sinab
-# ko'riladi, faqat elementning o'zigina emas.
-PUB_DATE_PATHS = ["pubDate", "dc:date", "date", "published", "atom:published", "atom:updated"]
-PUB_DATE_PARSERS = [_try_rfc822, _try_iso8601]
-
-
 def parse_pub_date(item):
-    for path in PUB_DATE_PATHS:
-        raw = item.findtext(path, default=None, namespaces=XML_NAMESPACES)
-        if not raw:
-            continue
-        for parser in PUB_DATE_PARSERS:
-            dt = parser(raw)
-            if dt is not None:
-                return dt
-    return None
+    raw = item.findtext("pubDate", default="")
+    try:
+        return parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
 
 
-def is_today(pub_date):
-    """pub_date Toshkent vaqti bo'yicha BUGUNGI kunga to'g'ri kelsa True
-    qaytaradi. Sana aniqlanmagan (None) bo'lsa — ishonchli emas, shuning
-    uchun False qaytariladi (xavfsizroq: eski/noaniq e'lon yubormaslik)."""
-    if pub_date is None:
-        return False
-    local_date = pub_date.astimezone(TASHKENT_TZ).date()
-    today = datetime.now(TASHKENT_TZ).date()
-    return local_date == today
-
-
-class Stats:
-    """Diagnostika uchun: nechta e'lon RSS'dan kelgani, nechtasi sarlavha
-    bo'yicha mos kelgani, nechtasi sanasi noaniqligi sabab va nechtasi
-    "bugun emas" sabab filtrlanib ketgani hisoblanadi. Shunda "0 ta yangi"
-    natijasi chiqsa — sababi aniq ko'rinadi (haqiqatan yangi yo'qmi, yoki
-    filtr xato ishlayaptimi)."""
-
-    def __init__(self):
-        self.total_rss_items = 0
-        self.title_matched = 0
-        self.no_pub_date = 0
-        self.not_today = 0
-        self.accepted = 0
-        self.sample_dumped = False  # bir marta xom XML namunasi chiqarilishi uchun
-
-
-def fetch_vacancies_for_keyword(session, keyword, stats):
-    """Bitta kalit so'z bo'yicha RSS'ni oladi. Tarmoq xatoligi yoki
-    noto'g'ri javob bo'lsa, istisno tashlaydi — chaqiruvchi funksiya buni
-    ushlab, faqat shu kalit so'zni o'tkazib yuboradi (butun skript
-    to'xtamaydi)."""
+def fetch_vacancies_for_keyword(keyword):
     params = {
         "text": keyword,
         "area": HH_AREA_ID,
         "order_by": "publication_time",
     }
-    resp = session.get(
-        RSS_URL,
-        params=params,
-        headers=build_headers(),
-        timeout=REQUEST_TIMEOUT,
-    )
+    resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
     resp.raise_for_status()
 
     root = ET.fromstring(resp.content)
     items = []
     for item in root.findall("./channel/item"):
-        stats.total_rss_items += 1
         link = item.findtext("link", default="").strip()
         title = item.findtext("title", default="Noma'lum lavozim").strip()
         description = strip_html(item.findtext("description", default=""))
@@ -311,27 +161,7 @@ def fetch_vacancies_for_keyword(session, keyword, stats):
         # Manager").
         if not matched_keyword(title):
             continue
-        stats.title_matched += 1
 
-        # Faqat BUGUNGI kunda e'lon qilingan vakansiyalar kerak — eski
-        # e'lonlar (kecha va undan oldingi) o'tkazib yuboriladi.
-        if ONLY_TODAY:
-            if pub_date is None:
-                stats.no_pub_date += 1
-                if not stats.sample_dumped:
-                    # Diagnostika: sana topilmagan birinchi elementning
-                    # xom XML tuzilishini bir marta log'ga chiqaramiz —
-                    # shunda hh.uz aynan qaysi teg/formatni ishlatayotgani
-                    # aniq ko'rinadi va parserni shunga moslash mumkin.
-                    stats.sample_dumped = True
-                    raw_xml = ET.tostring(item, encoding="unicode")
-                    print(f"  🔍 Diagnostika (sana topilmadi), xom XML:\n{raw_xml}")
-                continue
-            if not is_today(pub_date):
-                stats.not_today += 1
-                continue
-
-        stats.accepted += 1
         items.append({
             "id": link,  # link vakansiya uchun noyob identifikator sifatida ishlatiladi
             "title": title,
@@ -345,59 +175,15 @@ def fetch_vacancies_for_keyword(session, keyword, stats):
 def fetch_vacancies():
     """Har bir kalit so'z uchun alohida so'rov yuboradi, natijalarni
     (link bo'yicha) takrorlanmasdan birlashtiradi, eng yangilaridan
-    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi.
-
-    MUHIM: bitta kalit so'z bo'yicha so'rov muvaffaqiyatsiz bo'lsa (masalan,
-    hh.uz vaqtincha ulanishni to'xtatib qo'ysa), butun tekshiruv
-    to'xtamaydi — shu kalit so'z o'tkazib yuboriladi va qolganlari bilan
-    davom etiladi. Aks holda bitta vaqtinchalik tarmoq xatoligi barcha
-    vakansiyalarni (hattoki muvaffaqiyatli topilganlarini ham) yo'qotib
-    qo'yardi.
-    """
-    session = build_session()
+    boshlab saralaydi va faqat oxirgi MAX_RESULTS_PER_RUN tasini qaytaradi."""
     seen_links = set()
     all_items = []
-    failed_keywords = []
-    stats = Stats()
-
     for keyword in SEARCH_KEYWORDS:
-        try:
-            for item in fetch_vacancies_for_keyword(session, keyword, stats):
-                if item["id"] and item["id"] not in seen_links:
-                    seen_links.add(item["id"])
-                    all_items.append(item)
-        except (requests.exceptions.RequestException, ET.ParseError) as exc:
-            failed_keywords.append(keyword)
-            print(f"  ⚠️  '{keyword}' uchun so'rov muvaffaqiyatsiz bo'ldi: {exc}")
-            continue
-        finally:
-            # hh.uz serveriga hurmat: so'rovlar orasida tasodifiy pauza
-            # (bir xil ritm bot sifatida aniqlanish xavfini oshiradi)
-            time.sleep(random.uniform(0.8, 1.8))
-
-    print(
-        f"Diagnostika: RSS'dan jami {stats.total_rss_items} ta e'lon keldi, "
-        f"{stats.title_matched} tasi sarlavha bo'yicha mos keldi"
-        + (
-            f" ({stats.not_today} tasi bugungi emas, "
-            f"{stats.no_pub_date} tasining sanasi aniqlanmadi)"
-            if ONLY_TODAY else ""
-        )
-        + f", natijada {stats.accepted} ta qabul qilindi."
-    )
-
-    if failed_keywords:
-        print(
-            f"Jami {len(failed_keywords)}/{len(SEARCH_KEYWORDS)} ta kalit so'z "
-            f"bo'yicha so'rov amalga oshmadi (hh.uz vaqtincha ulanmagan bo'lishi "
-            f"mumkin): {', '.join(failed_keywords)}"
-        )
-    if failed_keywords and len(failed_keywords) == len(SEARCH_KEYWORDS):
-        print(
-            "Barcha so'rovlar muvaffaqiyatsiz bo'ldi — hh.uz ushbu ishga "
-            "tushish paytida umuman ulanmagan. Keyingi ishga tushishda "
-            "qayta urinib ko'riladi."
-        )
+        for item in fetch_vacancies_for_keyword(keyword):
+            if item["id"] and item["id"] not in seen_links:
+                seen_links.add(item["id"])
+                all_items.append(item)
+        time.sleep(1)  # hh.uz serveriga hurmat: so'rovlar orasida kichik pauza
 
     # pub_date bo'yicha eng yangisidan eskisiga saralaymiz (sana topilmasa eng oxiriga tushadi)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -437,31 +223,19 @@ def main():
     vacancies = fetch_vacancies()
 
     new_count = 0
-    failed_count = 0
     for vacancy in vacancies:
         vac_id = vacancy["id"]
         if not vac_id or vac_id in seen_ids:
             continue
 
         message = format_message(vacancy)
-        try:
-            send_to_telegram(message)
-        except requests.exceptions.RequestException as exc:
-            # Telegramga yuborishda xatolik bo'lsa, shu vakansiyani "seen"
-            # deb belgilamaymiz — keyingi ishga tushishda qayta uriniladi.
-            failed_count += 1
-            print(f"  ⚠️  '{vacancy['title']}' yuborilmadi: {exc}")
-            continue
-
+        send_to_telegram(message)
         seen_ids.add(vac_id)
         new_count += 1
         time.sleep(1)  # Telegram rate limit uchun kichik pauza
 
     save_seen_ids(seen_ids)
-    print(
-        f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}"
-        + (f" (yuborilmadi: {failed_count})" if failed_count else "")
-    )
+    print(f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}")
 
 
 if __name__ == "__main__":
