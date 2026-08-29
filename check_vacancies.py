@@ -102,6 +102,9 @@ ROOT_PATTERNS += [re.compile(rf"\b{re.escape(w)}\b", re.IGNORECASE) for w in ROO
 
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
+LAST_RUN_FILE = "last_run.json"  # har run oxirida yoziladi — "run bo'ldi,
+                                  # lekin yangi vakansiya topilmadi" holatini
+                                  # ham iz sifatida saqlab qolish uchun
 MAX_STORED_IDS = 2000  # fayl cheksiz o'sib ketmasligi uchun
 MAX_RESULTS_PER_RUN = 20  # har ishga tushishda faqat eng oxirgi shuncha mos vakansiya ko'rib chiqiladi
 MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
@@ -135,6 +138,28 @@ def save_seen_ids(seen_ids):
     ids_list = list(seen_ids)[-MAX_STORED_IDS:]
     with open(SEEN_IDS_FILE, "w", encoding="utf-8") as f:
         json.dump(ids_list, f)
+
+
+def save_last_run(status, matched_count, new_count, error=None):
+    """Har run oxirida (natija qanday bo'lishidan qat'iy nazar) chaqiriladi.
+    Bu fayl GitHub Actions workflow'da har safar commit qilinadi, shu bois
+    repo tarixiga qarab 'run bo'lgan-bo'lmaganini' istalgan payt bilish
+    mumkin bo'ladi — hatto yangi vakansiya topilmagan run'lar uchun ham."""
+    data = {
+        "last_run_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "status": status,  # "ok" yoki "error"
+        "matched_vacancies": matched_count,
+        "new_sent": new_count,
+    }
+    if error:
+        data["error"] = error
+    try:
+        with open(LAST_RUN_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        # last_run.json yozilmasa ham asosiy vazifa (vakansiya yuborish)
+        # allaqachon bajarilgan, shu sababli bu xato skriptni to'xtatmasin
+        print(f"[ogohlantirish] {LAST_RUN_FILE} yozilmadi: {e}")
 
 
 def strip_html(text):
@@ -373,10 +398,13 @@ def main():
         )
 
     seen_ids = load_seen_ids()
-    vacancies = fetch_vacancies()
-
+    vacancies = []
     new_count = 0
+    status = "ok"
+    error_msg = None
+
     try:
+        vacancies = fetch_vacancies()
         for vacancy in vacancies:
             vac_id = vacancy["id"]
             if not vac_id or vac_id in seen_ids:
@@ -393,9 +421,19 @@ def main():
                 # qayta yuborilib qolmaydi.
                 save_seen_ids(seen_ids)
             time.sleep(1)  # Telegram rate limit uchun kichik pauza
+    except Exception as e:
+        # Kutilmagan xato bo'lsa ham, run "iz qoldirishi" uchun
+        # last_run.json baribir yoziladi (pastdagi finally'da).
+        status = "error"
+        error_msg = str(e)
+        print(f"[xato] Run davomida kutilmagan xato: {e}")
+        raise
     finally:
         # Har ehtimolga qarshi yakunida yana bir bor saqlaymiz.
         save_seen_ids(seen_ids)
+        # Natija qanday bo'lishidan qat'iy nazar (topilma bor/yo'q, xato
+        # bor/yo'q) — bu run haqiqatan ham ishga tushganini tasdiqlovchi iz.
+        save_last_run(status, matched_count=len(vacancies), new_count=new_count, error=error_msg)
 
     print(f"Tekshiruv tugadi. Yangi yuborilgan vakansiyalar soni: {new_count}")
 
