@@ -2,9 +2,16 @@ name: Check hh.uz data analytics vacancies
 
 on:
   schedule:
-    # Har 30 daqiqada ishga tushadi (UTC vaqti bo'yicha)
-    - cron: "*/5 * * * *"
+    # Har 15 daqiqada ishga tushadi (UTC vaqti bo'yicha)
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
+
+concurrency:
+  # Agar oldingi run hali tugamagan bo'lsa, yangisi u bilan bir vaqtda
+  # ishlab, seen_ids.json'ga yozish/git push paytida to'qnashib qolmasligi
+  # uchun navbatga qo'yiladi (bekor qilinmaydi).
+  group: check-vacancies
+  cancel-in-progress: false
 
 jobs:
   check:
