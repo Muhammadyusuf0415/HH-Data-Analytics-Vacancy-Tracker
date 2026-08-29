@@ -36,10 +36,34 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python check_vacancies.py
 
-      - name: seen_ids.json holatini repo'ga saqlash
+      - name: seen_ids.json va last_run.json holatini repo'ga saqlash
         run: |
           git config user.name "hh-vacancy-bot"
           git config user.email "actions@github.com"
-          git add seen_ids.json
-          git diff --staged --quiet || git commit -m "Update seen vacancy ids"
-          git push
+          git add seen_ids.json last_run.json
+
+          # last_run.json har run'da o'zgaradi (ichida vaqt bor), shuning
+          # uchun bu yerda deyarli har doim commit qilinadi — bu ataylab
+          # shunday: "run bo'lgan-bo'lmaganini" keyin repo tarixidan bilish
+          # mumkin bo'lishi uchun (hatto yangi vakansiya topilmasa ham).
+          if git diff --staged --quiet; then
+            echo "Hech narsa o'zgarmadi, commit shart emas."
+            exit 0
+          fi
+          git commit -m "Update run status"
+
+          # Push paytida boshqa commit (masalan sizning qo'lda tahriringiz)
+          # orada kirib qolsa, oddiy 'git push' rad etilishi mumkin.
+          # Shu sababli push muvaffaqiyatsiz bo'lsa, avval rebase qilib,
+          # keyin qayta urinamiz (jami 5 marta).
+          for i in 1 2 3 4 5; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push muvaffaqiyatsiz ($i/5) — sync qilib qayta urinilmoqda..."
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}" || { git rebase --abort; break; }
+            sleep 3
+          done
+          echo "Push bir necha urinishdan keyin ham muvaffaqiyatsiz bo'ldi."
+          exit 1
