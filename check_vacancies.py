@@ -77,6 +77,26 @@ SEARCH_KEYWORDS = [
     "веб-аналитик",
     # --- O'zbekcha ---
     "ma'lumotlar tahlilchisi",
+    # --- Excel (ataylab yolg'iz "excel" emas, balki analitik lavozim
+    # bilan birga birikma sifatida qo'shilgan — aks holda sarlavhasida
+    # faqat "Excel" so'zi bo'lgan, data bilan aloqasi yo'q vakansiyalar
+    # ham (masalan "Excel bo'yicha o'qituvchi") o'tib ketishi mumkin edi) ---
+    "excel"
+    # --- Intern / stajyor / junior (tajriba orttirish uchun, lekin
+    # ataylab yolg'iz "intern"/"стажер" emas — sof holda qo'shilsa,
+    # data'ga aloqasi yo'q har qanday soha stajyorligi ham (masalan
+    # "Marketing Intern", "HR стажер") o'tib ketardi) ---
+    "data analyst intern",
+    "intern data analyst",
+    "data analytics intern",
+    "analytics intern",
+    "стажер аналитик",
+    "стажер дата-аналитик",
+    "стажер data analyst",
+    "junior data analyst",
+    "junior analitik",
+    "junior аналитик",
+    "junior BI",
 ]
 
 # Sarlavhada bu "ildiz" so'zlardan (butun so'z sifatida, boshqa harflar
@@ -90,7 +110,7 @@ ROOT_PREFIXES = [
     "analitik", "analitika",
     "analyst", "analytic", "analytics",
     "аналитик", "аналитика", "аналист",
-    "data", "дата",
+    "data", "дата","excel",
 ]
 # "bi" juda qisqa bo'lgani uchun faqat ALOHIDA SO'Z sifatida (masalan
 # "BI aналитик", "Senior BI") qidiriladi — "biznes", "bilan" kabi
