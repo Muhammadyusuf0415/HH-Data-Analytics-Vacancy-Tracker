@@ -3,7 +3,7 @@ name: Check hh.uz data analytics vacancies
 on:
   schedule:
     # Har 5 daqiqada ishga tushadi (UTC vaqti bo'yicha)
-    - cron: "*/5 * * * *"
+    - cron: "*/57 * * * *"
   workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
 
 concurrency:
